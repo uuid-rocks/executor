@@ -81,6 +81,14 @@ process. Keep encryption/signing keys stable.
 
 Cloud uses Alchemy's PlanetScale database and role resources. Worker events reach
 PlanetScale's PgBouncer through Hyperdrive; Durable Objects connect to PgBouncer directly.
+To deploy against a Postgres database you already run, set `CLOUD_DATABASE_URL`
+to its runtime user's URL. The deploy then creates no PlanetScale resources and needs no
+PlanetScale credentials. It runs migrations against that URL, or against
+`CLOUD_DATABASE_MIGRATION_URL` when set, and puts a Hyperdrive configuration in front of it.
+`CLOUD_DATABASE_CONNECTION_LIMIT` caps Hyperdrive's connections to it. The database must
+accept TLS connections from Cloudflare's network: Durable Objects with a fixed number of
+connections use the URL directly. Hyperdrive encrypts its connections but does not verify
+the server's certificate.
 `bun run hosted:cloud:dev` starts the cloud Worker, local Postgres, migrations,
 and frontend through Alchemy with service emulators and no credentials.
 `bun run hosted:cloud:dev:1password` uses `.env.cloud-development.op` instead;

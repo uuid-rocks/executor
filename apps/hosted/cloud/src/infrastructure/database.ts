@@ -182,10 +182,105 @@ const hyperdriveProps = (
     };
   }).pipe(Effect.orDie);
 
+/** The schema job that every database consumer waits for, including an existing Worker update. */
+const productionMigrations = (databaseUrl: Output.Output<Redacted.Redacted<string>, never>) =>
+  Effect.gen(function* () {
+    return yield* Command.Exec("Migrations", {
+      command: "node src/migrate.ts",
+      env: {
+        DATABASE_URL: databaseUrl,
+        BETTER_AUTH_URL: yield* cloudOrigin,
+        BETTER_AUTH_SECRET: yield* Config.Redacted("BETTER_AUTH_SECRET"),
+        // Auth setup provisions the OAuth resources at the role hosts too.
+        ...(yield* roleHostsJobEnvironment),
+      },
+      memo: false,
+      timeout: "5 minutes",
+    });
+  });
+
+/** Whether a URL names everything a Hyperdrive origin needs. */
+const isExternalDatabaseUrl = (value: string) => {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "postgres:" || url.protocol === "postgresql:") &&
+      url.hostname.length > 0 &&
+      url.pathname.length > 1 &&
+      url.username.length > 0 &&
+      url.password.length > 0
+    );
+  } catch {
+    return false;
+  }
+};
+
 /**
- * Production's PlanetScale database, its roles and the migration job. Workers use the runtime
- * role through PlanetScale's PgBouncer (port 6432), directly or through Hyperdrive. Only the
- * migration job receives the schema-owner role.
+ * A Postgres URL setting. Empty means unset, because GitHub Actions passes an unset secret as an
+ * empty string. A deploy stops on a URL without a user, password, host or database.
+ */
+const externalDatabaseSetting = (name: string) =>
+  Config.Redacted(name).pipe(
+    Config.option,
+    Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
+    Effect.tap(
+      Option.match({
+        onNone: () => Effect.void,
+        onSome: (value) =>
+          isExternalDatabaseUrl(Redacted.value(value))
+            ? Effect.void
+            : Effect.die(
+                new Error(
+                  `${name} must be a postgres:// URL with a user, password, host and database`,
+                ),
+              ),
+      }),
+    ),
+  );
+
+/**
+ * A Postgres database this stack does not provision, named by `CLOUD_DATABASE_URL`. Hyperdrive
+ * fronts it for Worker events and per-caller Durable Objects; fixed consumers connect to the URL
+ * directly, so the database must accept connections from Cloudflare's network. Migrations run as
+ * `CLOUD_DATABASE_MIGRATION_URL` when it is set, otherwise as the runtime URL's user. Hyperdrive
+ * requires TLS (`sslmode=require`) and does not verify the server's certificate.
+ */
+const externalDatabase = (url: Redacted.Redacted<string>, connectionLimit: Option.Option<number>) =>
+  Effect.gen(function* () {
+    const migrationUrl = Option.getOrElse(
+      yield* externalDatabaseSetting("CLOUD_DATABASE_MIGRATION_URL"),
+      () => url,
+    );
+    const migrations = yield* productionMigrations(Output.literal(migrationUrl));
+    const parsed = new URL(Redacted.value(url));
+    const origin = {
+      scheme: "postgresql" as const,
+      host: parsed.hostname,
+      port: parsed.port === "" ? 5432 : Number(parsed.port),
+      database: decodeURIComponent(parsed.pathname.slice(1)),
+      user: decodeURIComponent(parsed.username),
+      password: Redacted.make(decodeURIComponent(parsed.password)),
+    };
+    return runtimeDatabase(
+      migrations.hash.pipe(Output.map(() => url)),
+      Option.some(
+        Effect.succeed({
+          origin: migrations.hash.pipe(Output.map(() => origin)),
+          caching: { disabled: true },
+          ...Option.match(connectionLimit, {
+            onNone: () => ({}),
+            onSome: (limit) => ({ originConnectionLimit: limit }),
+          }),
+        }),
+      ),
+    );
+  });
+
+/**
+ * Production's database: the one `CLOUD_DATABASE_URL` names, or else a PlanetScale database, its
+ * roles and the migration job. With PlanetScale, Workers use the runtime role through
+ * PlanetScale's PgBouncer (port 6432), directly or through Hyperdrive, and only the migration job
+ * receives the schema-owner role.
  */
 const productionDatabase = Effect.gen(function* () {
   // Inside the Worker only the bindings' identities are needed, not provisioning config.
@@ -196,16 +291,20 @@ const productionDatabase = Effect.gen(function* () {
       Option.some(Effect.die(new Error("Hyperdrive props are deploy-time only"))),
     );
   }
+  const connectionLimit = yield* Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(
+    Config.option,
+    Effect.flatMap(
+      Schema.decodeUnknownEffect(Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5)))),
+    ),
+  );
+  const external = yield* externalDatabaseSetting("CLOUD_DATABASE_URL");
+  if (Option.isSome(external)) return yield* externalDatabase(external.value, connectionLimit);
   const settings = yield* Config.all({
     name: Config.String("PLANETSCALE_DATABASE_NAME"),
     clusterSize: Config.String("PLANETSCALE_CLUSTER_SIZE"),
     region: Config.String("PLANETSCALE_REGION"),
     adopt: Config.Boolean("PLANETSCALE_ADOPT_DATABASE").pipe(Config.withDefault(false)),
-    connectionLimit: Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(Config.option),
   });
-  const connectionLimit = yield* Schema.decodeUnknownEffect(
-    Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5))),
-  )(settings.connectionLimit);
   const database = yield* Planetscale.PostgresDatabase("Database", {
     name: settings.name,
     clusterSize: settings.clusterSize,
@@ -219,18 +318,9 @@ const productionDatabase = Effect.gen(function* () {
     database,
     inheritedRoles: ["postgres"],
   }).pipe(retain());
-  const migrations = yield* Command.Exec("Migrations", {
-    command: "node src/migrate.ts",
-    env: {
-      DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
-      BETTER_AUTH_URL: yield* cloudOrigin,
-      BETTER_AUTH_SECRET: yield* Config.Redacted("BETTER_AUTH_SECRET"),
-      // Auth setup provisions the OAuth resources at the role hosts too.
-      ...(yield* roleHostsJobEnvironment),
-    },
-    memo: false,
-    timeout: "5 minutes",
-  });
+  const migrations = yield* productionMigrations(
+    migrationRole.origin.pipe(Output.map(migrationUrl)),
+  );
   // Every database consumer waits for the migration, including an existing Worker update.
   const migrated = Output.all(role.pooledOrigin, migrations.hash).pipe(
     Output.map(([origin]) => origin),
