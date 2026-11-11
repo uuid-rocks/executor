@@ -237,16 +237,40 @@ const externalDatabaseUrl = Config.Redacted("CLOUD_DATABASE_URL").pipe(
   ),
 );
 
+/** `CLOUD_DATABASE_CONNECTION_LIMIT`: the most connections Hyperdrive opens to the database. */
+const hyperdriveConnectionLimit = Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(
+  Config.option,
+  Effect.flatMap(
+    Schema.decodeUnknownEffect(Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5)))),
+  ),
+);
+
 /**
- * A Postgres database this stack does not provision, named by `CLOUD_DATABASE_URL`. Hyperdrive
- * fronts it for Worker events and per-caller Durable Objects; fixed consumers connect to the URL
- * directly, so the database must accept connections from Cloudflare's network. Migrations run as
- * the URL's user. Hyperdrive requires TLS (`sslmode=require`) and does not verify the server's
- * certificate.
+ * A Postgres database this stack does not provision, named by `CLOUD_DATABASE_URL`. Migrations
+ * run as the URL's user. With `CLOUD_DATABASE_HYPERDRIVE=true`, Hyperdrive fronts it for Worker
+ * events and per-caller Durable Objects; Hyperdrive requires TLS (`sslmode=require`) and does not
+ * verify the server's certificate. Otherwise every consumer connects to the URL directly, so each
+ * Worker event opens its own connections. Either way the database must accept connections from
+ * Cloudflare's network. Alchemy binds both settings into each Worker that reads them, so the
+ * deployed Worker makes the same choice.
  */
-const externalDatabase = (url: Redacted.Redacted<string>, connectionLimit: Option.Option<number>) =>
+const externalDatabase = (url: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
+    const hyperdrive = yield* Config.Boolean("CLOUD_DATABASE_HYPERDRIVE").pipe(
+      Config.withDefault(false),
+    );
+    // Inside the Worker only the bindings' identities are needed, not provisioning config.
+    if (globalThis.__ALCHEMY_RUNTIME__)
+      return runtimeDatabase(
+        Output.literal(url),
+        hyperdrive
+          ? Option.some(Effect.die(new Error("Hyperdrive props are deploy-time only")))
+          : Option.none(),
+      );
     const migrations = yield* productionMigrations(Output.literal(url));
+    const migrated = migrations.hash.pipe(Output.map(() => url));
+    if (!hyperdrive) return runtimeDatabase(migrated, Option.none());
+    const connectionLimit = yield* hyperdriveConnectionLimit;
     const parsed = new URL(Redacted.value(url));
     const origin = {
       scheme: "postgresql" as const,
@@ -257,7 +281,7 @@ const externalDatabase = (url: Redacted.Redacted<string>, connectionLimit: Optio
       password: Redacted.make(decodeURIComponent(parsed.password)),
     };
     return runtimeDatabase(
-      migrations.hash.pipe(Output.map(() => url)),
+      migrated,
       Option.some(
         Effect.succeed({
           origin: migrations.hash.pipe(Output.map(() => origin)),
@@ -278,6 +302,8 @@ const externalDatabase = (url: Redacted.Redacted<string>, connectionLimit: Optio
  * receives the schema-owner role.
  */
 const productionDatabase = Effect.gen(function* () {
+  const external = yield* externalDatabaseUrl;
+  if (Option.isSome(external)) return yield* externalDatabase(external.value);
   // Inside the Worker only the bindings' identities are needed, not provisioning config.
   if (globalThis.__ALCHEMY_RUNTIME__) {
     const role = yield* Planetscale.PostgresRole.ref("RuntimeRole");
@@ -286,14 +312,7 @@ const productionDatabase = Effect.gen(function* () {
       Option.some(Effect.die(new Error("Hyperdrive props are deploy-time only"))),
     );
   }
-  const connectionLimit = yield* Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(
-    Config.option,
-    Effect.flatMap(
-      Schema.decodeUnknownEffect(Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5)))),
-    ),
-  );
-  const external = yield* externalDatabaseUrl;
-  if (Option.isSome(external)) return yield* externalDatabase(external.value, connectionLimit);
+  const connectionLimit = yield* hyperdriveConnectionLimit;
   const settings = yield* Config.all({
     name: Config.String("PLANETSCALE_DATABASE_NAME"),
     clusterSize: Config.String("PLANETSCALE_CLUSTER_SIZE"),

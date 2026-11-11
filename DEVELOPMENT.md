@@ -84,11 +84,12 @@ PlanetScale's PgBouncer through Hyperdrive; Durable Objects connect to PgBouncer
 To deploy against a Postgres database you already run, set `CLOUD_DATABASE_URL`
 to its URL. The deploy then creates no PlanetScale resources and needs no PlanetScale
 credentials. It runs migrations as that URL's user, so the user must be able to create
-schema objects, and puts a Hyperdrive configuration in front of the database.
-`CLOUD_DATABASE_CONNECTION_LIMIT` caps Hyperdrive's connections to it. The database must
-accept TLS connections from Cloudflare's network: Durable Objects with a fixed number of
-connections use the URL directly. Hyperdrive encrypts its connections but does not verify
-the server's certificate.
+schema objects. The database must accept connections from Cloudflare's network.
+Set `CLOUD_DATABASE_HYPERDRIVE=true` to put a Hyperdrive configuration in front of it;
+`CLOUD_DATABASE_CONNECTION_LIMIT` caps Hyperdrive's connections. Hyperdrive requires TLS
+and does not verify the server's certificate. Without Hyperdrive, each
+Worker event opens its own connections, so point the URL at a transaction-mode pooler
+such as PgBouncer.
 `bun run hosted:cloud:dev` starts the cloud Worker, local Postgres, migrations,
 and frontend through Alchemy with service emulators and no credentials.
 `bun run hosted:cloud:dev:1password` uses `.env.cloud-development.op` instead;
