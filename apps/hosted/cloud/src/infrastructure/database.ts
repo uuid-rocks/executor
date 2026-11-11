@@ -216,42 +216,37 @@ const isExternalDatabaseUrl = (value: string) => {
 };
 
 /**
- * A Postgres URL setting. Empty means unset, because GitHub Actions passes an unset secret as an
+ * `CLOUD_DATABASE_URL`. Empty means unset, because GitHub Actions passes an unset secret as an
  * empty string. A deploy stops on a URL without a user, password, host or database.
  */
-const externalDatabaseSetting = (name: string) =>
-  Config.Redacted(name).pipe(
-    Config.option,
-    Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
-    Effect.tap(
-      Option.match({
-        onNone: () => Effect.void,
-        onSome: (value) =>
-          isExternalDatabaseUrl(Redacted.value(value))
-            ? Effect.void
-            : Effect.die(
-                new Error(
-                  `${name} must be a postgres:// URL with a user, password, host and database`,
-                ),
+const externalDatabaseUrl = Config.Redacted("CLOUD_DATABASE_URL").pipe(
+  Config.option,
+  Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
+  Effect.tap(
+    Option.match({
+      onNone: () => Effect.void,
+      onSome: (value) =>
+        isExternalDatabaseUrl(Redacted.value(value))
+          ? Effect.void
+          : Effect.die(
+              new Error(
+                "CLOUD_DATABASE_URL must be a postgres:// URL with a user, password, host and database",
               ),
-      }),
-    ),
-  );
+            ),
+    }),
+  ),
+);
 
 /**
  * A Postgres database this stack does not provision, named by `CLOUD_DATABASE_URL`. Hyperdrive
  * fronts it for Worker events and per-caller Durable Objects; fixed consumers connect to the URL
  * directly, so the database must accept connections from Cloudflare's network. Migrations run as
- * `CLOUD_DATABASE_MIGRATION_URL` when it is set, otherwise as the runtime URL's user. Hyperdrive
- * requires TLS (`sslmode=require`) and does not verify the server's certificate.
+ * the URL's user. Hyperdrive requires TLS (`sslmode=require`) and does not verify the server's
+ * certificate.
  */
 const externalDatabase = (url: Redacted.Redacted<string>, connectionLimit: Option.Option<number>) =>
   Effect.gen(function* () {
-    const migrationUrl = Option.getOrElse(
-      yield* externalDatabaseSetting("CLOUD_DATABASE_MIGRATION_URL"),
-      () => url,
-    );
-    const migrations = yield* productionMigrations(Output.literal(migrationUrl));
+    const migrations = yield* productionMigrations(Output.literal(url));
     const parsed = new URL(Redacted.value(url));
     const origin = {
       scheme: "postgresql" as const,
@@ -297,7 +292,7 @@ const productionDatabase = Effect.gen(function* () {
       Schema.decodeUnknownEffect(Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5)))),
     ),
   );
-  const external = yield* externalDatabaseSetting("CLOUD_DATABASE_URL");
+  const external = yield* externalDatabaseUrl;
   if (Option.isSome(external)) return yield* externalDatabase(external.value, connectionLimit);
   const settings = yield* Config.all({
     name: Config.String("PLANETSCALE_DATABASE_NAME"),

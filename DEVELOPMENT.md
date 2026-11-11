@@ -82,9 +82,9 @@ process. Keep encryption/signing keys stable.
 Cloud uses Alchemy's PlanetScale database and role resources. Worker events reach
 PlanetScale's PgBouncer through Hyperdrive; Durable Objects connect to PgBouncer directly.
 To deploy against a Postgres database you already run, set `CLOUD_DATABASE_URL`
-to its runtime user's URL. The deploy then creates no PlanetScale resources and needs no
-PlanetScale credentials. It runs migrations against that URL, or against
-`CLOUD_DATABASE_MIGRATION_URL` when set, and puts a Hyperdrive configuration in front of it.
+to its URL. The deploy then creates no PlanetScale resources and needs no PlanetScale
+credentials. It runs migrations as that URL's user, so the user must be able to create
+schema objects, and puts a Hyperdrive configuration in front of the database.
 `CLOUD_DATABASE_CONNECTION_LIMIT` caps Hyperdrive's connections to it. The database must
 accept TLS connections from Cloudflare's network: Durable Objects with a fixed number of
 connections use the URL directly. Hyperdrive encrypts its connections but does not verify
