@@ -199,17 +199,11 @@ const productionMigrations = (databaseUrl: Output.Output<Redacted.Redacted<strin
     });
   });
 
-/** Whether a URL names everything a Hyperdrive origin needs. */
-const isExternalDatabaseUrl = (value: string) => {
+/** Whether a URL names a Postgres host. */
+const isPostgresUrl = (value: string) => {
   try {
     const url = new URL(value);
-    return (
-      (url.protocol === "postgres:" || url.protocol === "postgresql:") &&
-      url.hostname.length > 0 &&
-      url.pathname.length > 1 &&
-      url.username.length > 0 &&
-      url.password.length > 0
-    );
+    return (url.protocol === "postgres:" || url.protocol === "postgresql:") && url.hostname !== "";
   } catch {
     return false;
   }
@@ -217,7 +211,7 @@ const isExternalDatabaseUrl = (value: string) => {
 
 /**
  * `CLOUD_DATABASE_URL`. Empty means unset, because GitHub Actions passes an unset secret as an
- * empty string. A deploy stops on a URL without a user, password, host or database.
+ * empty string. A deploy stops on a URL that does not name a Postgres host.
  */
 const externalDatabaseUrl = Config.Redacted("CLOUD_DATABASE_URL").pipe(
   Config.option,
@@ -226,13 +220,9 @@ const externalDatabaseUrl = Config.Redacted("CLOUD_DATABASE_URL").pipe(
     Option.match({
       onNone: () => Effect.void,
       onSome: (value) =>
-        isExternalDatabaseUrl(Redacted.value(value))
+        isPostgresUrl(Redacted.value(value))
           ? Effect.void
-          : Effect.die(
-              new Error(
-                "CLOUD_DATABASE_URL must be a postgres:// URL with a user, password, host and database",
-              ),
-            ),
+          : Effect.die(new Error("CLOUD_DATABASE_URL must be a postgres:// URL with a host")),
     }),
   ),
 );
@@ -272,6 +262,12 @@ const externalDatabase = (url: Redacted.Redacted<string>) =>
     if (!hyperdrive) return runtimeDatabase(migrated, Option.none());
     const connectionLimit = yield* hyperdriveConnectionLimit;
     const parsed = new URL(Redacted.value(url));
+    if (parsed.username === "" || parsed.password === "" || parsed.pathname.length <= 1)
+      return yield* Effect.die(
+        new Error(
+          "CLOUD_DATABASE_HYPERDRIVE needs CLOUD_DATABASE_URL to name a user, password and database",
+        ),
+      );
     const origin = {
       scheme: "postgresql" as const,
       host: parsed.hostname,
