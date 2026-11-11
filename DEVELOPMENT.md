@@ -85,6 +85,8 @@ To deploy against a Postgres database you already run, set `CLOUD_DATABASE_URL`
 to its URL. The deploy then creates no PlanetScale resources and needs no PlanetScale
 credentials. It runs migrations as that URL's user, so the user must be able to create
 schema objects. The database must accept connections from Cloudflare's network.
+Migrations and direct connections use the URL as given, so add `sslmode=require` or
+`sslmode=verify-full` to it for TLS.
 Set `CLOUD_DATABASE_HYPERDRIVE=true` to put a Hyperdrive configuration in front of it;
 `CLOUD_DATABASE_CONNECTION_LIMIT` caps Hyperdrive's connections. Hyperdrive requires TLS
 and does not verify the server's certificate. Without Hyperdrive, each
