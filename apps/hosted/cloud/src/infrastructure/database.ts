@@ -182,12 +182,100 @@ const hyperdriveProps = (
     };
   }).pipe(Effect.orDie);
 
+const hyperdriveConnectionLimit = Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(
+  Config.option,
+  Effect.flatMap(
+    Schema.decodeUnknownEffect(Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5)))),
+  ),
+);
+
+const migrationJob = (databaseUrl: Output.Output<Redacted.Redacted<string>, never>) =>
+  Effect.gen(function* () {
+    return yield* Command.Exec("Migrations", {
+      command: "node src/migrate.ts",
+      env: {
+        DATABASE_URL: databaseUrl,
+        BETTER_AUTH_URL: yield* cloudOrigin,
+        BETTER_AUTH_SECRET: yield* Config.Redacted("BETTER_AUTH_SECRET"),
+        // Auth setup provisions the OAuth resources at the role hosts too.
+        ...(yield* roleHostsJobEnvironment),
+      },
+      memo: false,
+      timeout: "5 minutes",
+    });
+  });
+
+const externalDatabaseUrl = Config.Redacted("CLOUD_DATABASE_URL").pipe(
+  Config.option,
+  Effect.map(Option.filter((url) => Redacted.value(url) !== "")),
+);
+
+const hyperdriveOrigin = (url: Redacted.Redacted<string>) =>
+  Option.liftThrowable((value: string) => {
+    const parsed = new URL(value);
+    return {
+      scheme: "postgresql" as const,
+      host: parsed.hostname,
+      port: parsed.port === "" ? 5432 : Number(parsed.port),
+      database: decodeURIComponent(parsed.pathname.slice(1)),
+      user: decodeURIComponent(parsed.username),
+      password: decodeURIComponent(parsed.password),
+    };
+  })(Redacted.value(url)).pipe(
+    Option.filter(
+      (origin) => origin.database !== "" && origin.user !== "" && origin.password !== "",
+    ),
+    Option.map(({ password, ...origin }) => ({ ...origin, password: Redacted.make(password) })),
+  );
+
+const externalDatabase = (url: Redacted.Redacted<string>) =>
+  Effect.gen(function* () {
+    // Alchemy binds the settings a Worker reads into it, so the deployed Worker sees the same values.
+    const hyperdrive = yield* Config.Boolean("CLOUD_DATABASE_HYPERDRIVE").pipe(
+      Config.withDefault(false),
+    );
+    if (globalThis.__ALCHEMY_RUNTIME__)
+      return runtimeDatabase(
+        Output.literal(url),
+        hyperdrive
+          ? Option.some(Effect.die(new Error("Hyperdrive props are deploy-time only")))
+          : Option.none(),
+      );
+    const migrations = yield* migrationJob(Output.literal(url));
+    const migrated = <A>(value: A) => migrations.hash.pipe(Output.map(() => value));
+    if (!hyperdrive) return runtimeDatabase(migrated(url), Option.none());
+    const origin = hyperdriveOrigin(url);
+    if (Option.isNone(origin))
+      return yield* Effect.die(
+        new Error(
+          "CLOUD_DATABASE_HYPERDRIVE needs CLOUD_DATABASE_URL to name a user, password and database",
+        ),
+      );
+    const connectionLimit = yield* hyperdriveConnectionLimit;
+    return runtimeDatabase(
+      migrated(url),
+      Option.some(
+        Effect.succeed({
+          origin: migrated(origin.value),
+          caching: { disabled: true },
+          ...Option.match(connectionLimit, {
+            onNone: () => ({}),
+            onSome: (limit) => ({ originConnectionLimit: limit }),
+          }),
+        }),
+      ),
+    );
+  });
+
 /**
- * Production's PlanetScale database, its roles and the migration job. Workers use the runtime
- * role through PlanetScale's PgBouncer (port 6432), directly or through Hyperdrive. Only the
- * migration job receives the schema-owner role.
+ * Production's database: the one `CLOUD_DATABASE_URL` names, or else a PlanetScale database, its
+ * roles and the migration job. PlanetScale Workers use the runtime role through PlanetScale's
+ * PgBouncer (port 6432), directly or through Hyperdrive. Only the migration job receives the
+ * schema-owner role.
  */
 const productionDatabase = Effect.gen(function* () {
+  const external = yield* externalDatabaseUrl;
+  if (Option.isSome(external)) return yield* externalDatabase(external.value);
   // Inside the Worker only the bindings' identities are needed, not provisioning config.
   if (globalThis.__ALCHEMY_RUNTIME__) {
     const role = yield* Planetscale.PostgresRole.ref("RuntimeRole");
@@ -201,11 +289,8 @@ const productionDatabase = Effect.gen(function* () {
     clusterSize: Config.String("PLANETSCALE_CLUSTER_SIZE"),
     region: Config.String("PLANETSCALE_REGION"),
     adopt: Config.Boolean("PLANETSCALE_ADOPT_DATABASE").pipe(Config.withDefault(false)),
-    connectionLimit: Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(Config.option),
   });
-  const connectionLimit = yield* Schema.decodeUnknownEffect(
-    Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5))),
-  )(settings.connectionLimit);
+  const connectionLimit = yield* hyperdriveConnectionLimit;
   const database = yield* Planetscale.PostgresDatabase("Database", {
     name: settings.name,
     clusterSize: settings.clusterSize,
@@ -219,18 +304,7 @@ const productionDatabase = Effect.gen(function* () {
     database,
     inheritedRoles: ["postgres"],
   }).pipe(retain());
-  const migrations = yield* Command.Exec("Migrations", {
-    command: "node src/migrate.ts",
-    env: {
-      DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
-      BETTER_AUTH_URL: yield* cloudOrigin,
-      BETTER_AUTH_SECRET: yield* Config.Redacted("BETTER_AUTH_SECRET"),
-      // Auth setup provisions the OAuth resources at the role hosts too.
-      ...(yield* roleHostsJobEnvironment),
-    },
-    memo: false,
-    timeout: "5 minutes",
-  });
+  const migrations = yield* migrationJob(migrationRole.origin.pipe(Output.map(migrationUrl)));
   // Every database consumer waits for the migration, including an existing Worker update.
   const migrated = Output.all(role.pooledOrigin, migrations.hash).pipe(
     Output.map(([origin]) => origin),
