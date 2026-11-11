@@ -200,14 +200,13 @@ const productionMigrations = (databaseUrl: Output.Output<Redacted.Redacted<strin
   });
 
 /** Whether a URL names a Postgres host. */
-const isPostgresUrl = (value: string) => {
-  try {
-    const url = new URL(value);
-    return (url.protocol === "postgres:" || url.protocol === "postgresql:") && url.hostname !== "";
-  } catch {
-    return false;
-  }
-};
+const isPostgresUrl = (value: string) =>
+  Option.liftThrowable((input: string) => new URL(input))(value).pipe(
+    Option.exists(
+      (url) =>
+        (url.protocol === "postgres:" || url.protocol === "postgresql:") && url.hostname !== "",
+    ),
+  );
 
 /**
  * `CLOUD_DATABASE_URL`. Empty means unset, because GitHub Actions passes an unset secret as an
@@ -261,21 +260,31 @@ const externalDatabase = (url: Redacted.Redacted<string>) =>
     const migrated = migrations.hash.pipe(Output.map(() => url));
     if (!hyperdrive) return runtimeDatabase(migrated, Option.none());
     const connectionLimit = yield* hyperdriveConnectionLimit;
-    const parsed = new URL(Redacted.value(url));
-    if (parsed.username === "" || parsed.password === "" || parsed.pathname.length <= 1)
-      return yield* Effect.die(
-        new Error(
-          "CLOUD_DATABASE_HYPERDRIVE needs CLOUD_DATABASE_URL to name a user, password and database",
-        ),
-      );
-    const origin = {
-      scheme: "postgresql" as const,
-      host: parsed.hostname,
-      port: parsed.port === "" ? 5432 : Number(parsed.port),
-      database: decodeURIComponent(parsed.pathname.slice(1)),
-      user: decodeURIComponent(parsed.username),
-      password: Redacted.make(decodeURIComponent(parsed.password)),
-    };
+    const origin = yield* Option.liftThrowable((value: string) => {
+      const parsed = new URL(value);
+      return {
+        scheme: "postgresql" as const,
+        host: parsed.hostname,
+        port: parsed.port === "" ? 5432 : Number(parsed.port),
+        database: decodeURIComponent(parsed.pathname.slice(1)),
+        user: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password),
+      };
+    })(Redacted.value(url)).pipe(
+      Option.filter(
+        ({ database, user, password }) => database !== "" && user !== "" && password !== "",
+      ),
+      Option.match({
+        onNone: () =>
+          Effect.die(
+            new Error(
+              "CLOUD_DATABASE_HYPERDRIVE needs CLOUD_DATABASE_URL to name a percent-encoded user, password and database",
+            ),
+          ),
+        onSome: ({ password, ...rest }) =>
+          Effect.succeed({ ...rest, password: Redacted.make(password) }),
+      }),
+    );
     return runtimeDatabase(
       migrated,
       Option.some(
