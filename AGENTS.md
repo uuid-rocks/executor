@@ -20,6 +20,11 @@ without forcing hosted organizations into local. Use public SDK surfaces and
 the existing shared UI. See the coding note for details and the pinned Effect
 reference.
 
+<!-- JHPATCH: fork rule for marking fork-only changes -->
+## Fork changes
+
+Add a comment on the first line of every change so that rebasing is easier: // JHPATCH: <why the fork differs here, very concise> Skip lines removed only because of another change, such as imports.
+
 ## Migrations must keep the app online
 
 Cloud migrations run before the replacement server deploys. Every migration
