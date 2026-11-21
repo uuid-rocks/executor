@@ -26,6 +26,8 @@ import type {
   Executor,
   OwnerId,
   SelectedAccounts,
+  // JHPATCH: a tool call's access check reads its risk policy.
+  ToolName,
 } from "@executor-js/sdk/core";
 import type { ToolIdentity } from "@executor-js/authorization";
 import type { ToolAuthorization } from "./authorization.ts";
@@ -191,6 +193,8 @@ const usableAppWithLinks = (
   owner: OwnerId,
   app: AppId,
   read?: SelectionReads,
+  // JHPATCH: a tool call's access statement also reads its risk policy.
+  tool?: ToolName,
 ) =>
   Effect.gen(function* () {
     const ahead =
@@ -201,7 +205,8 @@ const usableAppWithLinks = (
     const organization = (yield* CurrentOrganization).organization;
     const user = yield* CurrentUserId;
     const fold = read === undefined ? undefined : yield* FoldReadAhead;
-    const { access, accounts } =
+    // JHPATCH: `risk` is the call's risk policy, read in the same statement when `tool` is named.
+    const { access, accounts, risk } =
       fold !== undefined &&
       fold.organization === organization &&
       fold.user === user &&
@@ -212,17 +217,20 @@ const usableAppWithLinks = (
           ? // The active version needs no account, so the statement reads no links or
             // app links. A retained version that declares accounts reads them when it resolves
             // its requirements.
-            yield* resourceAuthorityForApp(organization, user, app).pipe(
-              Effect.flatMap(({ actor, access }) =>
+            // JHPATCH: with the call's risk policy.
+            yield* resourceAuthorityForApp(organization, user, app, tool).pipe(
+              Effect.flatMap(({ actor, access, risk }) =>
                 Effect.map(policyDatabase, (sql) => ({
                   access,
+                  risk,
                   accounts: appAccountReads(sql, { subject: actor.user, app }),
                 })),
               ),
             )
-          : yield* resourceAuthorityForLinks(organization, user, app);
+          : yield* resourceAuthorityForLinks(organization, user, app, tool);
     if (!access.canUse) return yield* new OrganizationForbidden();
-    return { app: yield* Effect.fromResult(current), linked: accounts };
+    // JHPATCH: and the risk policy read with the access check.
+    return { app: yield* Effect.fromResult(current), linked: accounts, risk };
   });
 /**
  * Check the configured app and resolve the accounts the caller's operation runs with, before
@@ -233,10 +241,17 @@ export const selectedApp = (
   owner: OwnerId,
   app: AppId,
   read?: SelectionReads,
+  // JHPATCH: a tool call's risk policy, read with its access check.
+  tool?: ToolName,
 ) =>
   Effect.gen(function* () {
-    const { app: current, linked } = yield* usableAppWithLinks(executor, owner, app, read);
-    return { app: current, accounts: yield* callerAccounts(current, linked) };
+    // JHPATCH: and the risk policy read with the access check.
+    const {
+      app: current,
+      linked,
+      risk,
+    } = yield* usableAppWithLinks(executor, owner, app, read, tool);
+    return { app: current, accounts: yield* callerAccounts(current, linked), risk };
   });
 /**
  * Check the configured app and resolve the caller's accounts for one of its versions: a
@@ -317,7 +332,8 @@ export const selectedAppFrom = (
 export const checkedToolCall = <E, R>(
   executor: Executor,
   owner: OwnerId,
-  input: { readonly app: AppId; readonly version?: VersionId | undefined },
+  // JHPATCH: the tool names the risk policy its access check reads, returned as `risk`.
+  input: { readonly app: AppId; readonly version?: VersionId | undefined; readonly tool: ToolName },
   check: (
     selected: { readonly version: VersionId; readonly accounts: AppAccounts },
     described?: ToolIdentity,
@@ -325,19 +341,26 @@ export const checkedToolCall = <E, R>(
   read?: SelectionReads,
 ) =>
   Effect.gen(function* () {
-    const { app, accounts } = yield* selectedApp(executor, owner, input.app, read);
+    // JHPATCH: `risk` goes to the call as `RiskPolicyReadAhead`.
+    const { app, accounts, risk } = yield* selectedApp(
+      executor,
+      owner,
+      input.app,
+      read,
+      input.tool,
+    );
     if (input.version !== undefined && input.version !== app.activeVersion)
       return yield* new VersionNotFound({ app: app.id, version: input.version });
     if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
     const version = app.activeVersion;
     const first = yield* check({ version, accounts });
-    if (first.tool === undefined) return { version, accounts, kind: first.kind };
+    if (first.tool === undefined) return { version, accounts, kind: first.kind, risk };
     const live = yield* callerAccounts(app);
     const { kind } = yield* check(
       { version, accounts: live },
       sameAccounts(live, accounts) ? first.tool : undefined,
     );
-    return { version, accounts: live, kind };
+    return { version, accounts: live, kind, risk };
   });
 
 /**

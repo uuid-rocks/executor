@@ -5,6 +5,8 @@ import {
   OAuthClientId,
   ProviderId,
   StorageError,
+  // JHPATCH: a tool call's access check reads its risk policy.
+  type ToolName,
   type Account,
   type App,
 } from "@executor-js/sdk/core";
@@ -21,6 +23,8 @@ import {
   organizationOwner,
 } from "../contracts/organization.ts";
 import { AccessRevision, AppAccess, type AppAudience } from "../contracts/resource-access.ts";
+// JHPATCH: a tool call's access check also reads its organization's risk policy.
+import { riskPolicyColumns, RiskPolicyColumns, type RiskPolicyRead } from "./tool-risk-policy.ts";
 
 /** A concrete client remains owned by this invocation (Cloud) or host process (self-host). */
 export const policyDatabase = Effect.flatten(GroupDatabase).pipe(
@@ -116,6 +120,13 @@ export const applicationAccess = (app: AppId, actor: ResourceAuthority) =>
     }),
   );
 
+// JHPATCH: the risk policy columns a tool call's access check read beside its membership.
+const riskPolicyRead = (target: Omit<RiskPolicyRead, "columns">, row: unknown) =>
+  Effect.map(Schema.decodeUnknownEffect(RiskPolicyColumns)(row), (columns): RiskPolicyRead => ({
+    ...target,
+    columns,
+  }));
+
 const MemberAppPolicy = Schema.Struct({
   ...Membership.fields,
   app: Schema.NullOr(AppId),
@@ -134,17 +145,22 @@ export const resourceAuthorityForApps = (
   organization: OrganizationId,
   user: string | undefined,
   apps: readonly AppId[],
+  // JHPATCH: a tool call reads its risk policy in its access check's statement.
+  risk?: { readonly app: AppId; readonly tool: ToolName },
 ) =>
   Effect.gen(function* () {
     if (user === undefined) return yield* new OrganizationForbidden();
     const sql = yield* policyDatabase;
+    const target = risk === undefined ? undefined : { organization, ...risk };
     const rows = yield* sql`select m.id, m.role, p.id as app, p.creator_id as creator, p.audience,
     p.revision,
     case when p.id is null then null else
       array(select g.group_id from hosted_app_groups g where g.app_id = p.id order by g.group_id)
     end as groups,
     exists(select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
-      where g.app_id = p.id and gm.member_id = m.id) as granted
+      where g.app_id = p.id and gm.member_id = m.id) as granted${
+        target === undefined ? sql`` : sql`, ${riskPolicyColumns(sql, target)}`
+      }
     from member m
     left join hosted_app_access p on ${sql.in("p.id", apps)} and p.organization_id = m."organizationId"
     where m."organizationId" = ${organization} and m."userId" = ${user}`;
@@ -174,7 +190,12 @@ export const resourceAuthorityForApps = (
             ),
           ],
     );
-    return { actor, access };
+    // JHPATCH: the risk policy columns, when asked for, repeat on every row.
+    return {
+      actor,
+      access,
+      risk: target === undefined ? undefined : yield* riskPolicyRead(target, rows[0]),
+    };
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
@@ -183,12 +204,19 @@ export const resourceAuthorityForApp = (
   organization: OrganizationId,
   user: string | undefined,
   app: AppId,
+  // JHPATCH: the tool a call names, to read its risk policy in the same statement.
+  tool?: ToolName,
 ) =>
   Effect.gen(function* () {
-    const { actor, access } = yield* resourceAuthorityForApps(organization, user, [app]);
+    const { actor, access, risk } = yield* resourceAuthorityForApps(
+      organization,
+      user,
+      [app],
+      tool === undefined ? undefined : { app, tool },
+    );
     const [policy] = access;
     if (policy === undefined) return yield* new OrganizationForbidden();
-    return { actor, access: policy };
+    return { actor, access: policy, risk };
   });
 
 /**
@@ -270,10 +298,13 @@ export const resourceAuthorityForLinks = (
   organization: OrganizationId,
   user: string | undefined,
   app: AppId,
+  // JHPATCH: the tool a call names, to read its risk policy in the same statement.
+  tool?: ToolName,
 ) =>
   Effect.gen(function* () {
     if (user === undefined) return yield* new OrganizationForbidden();
     const sql = yield* policyDatabase;
+    const target = tool === undefined ? undefined : { organization, app, tool };
     const rows = yield* sql`select m.id, m.role, p.id as app, p.creator_id as creator, p.audience,
     p.revision,
     case when p.id is null then null else
@@ -284,7 +315,10 @@ export const resourceAuthorityForLinks = (
     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
       '[]'::json)::text from ${usableLinks(sql, { subject: user, apps: [app] })}) as "userLinks",
     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
-      '[]'::json)::text from ${usableAppLinks(sql, [app])}) as "appLinks"
+      '[]'::json)::text from ${usableAppLinks(sql, [app])}) as "appLinks"${
+        // JHPATCH: and the call's risk policy.
+        target === undefined ? sql`` : sql`, ${riskPolicyColumns(sql, target)}`
+      }
     from member m
     left join hosted_app_access p on p.id = ${app} and p.organization_id = m."organizationId"
     where m."organizationId" = ${organization} and m."userId" = ${user}`;
@@ -307,6 +341,8 @@ export const resourceAuthorityForLinks = (
         },
         actor,
       ),
+      // JHPATCH: the risk policy this statement read for the call.
+      risk: target === undefined ? undefined : yield* riskPolicyRead(target, rows[0]),
       accounts: Effect.all({
         user: Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(LinkedAccount)))(
           row.userLinks,

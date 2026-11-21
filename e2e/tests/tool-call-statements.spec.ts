@@ -1,12 +1,10 @@
-// JHPATCH: every call also reads the organization's risk policy, in one statement of its own.
 /**
  * An MCP tool call checks its access and reads its stored state before the app runs, and each
  * SQL statement is a network round trip from Cloud's session object to the database. The check
  * reads the app, then checks membership with the app's policy and reads the caller's linked
  * accounts in one statement. The call then reads the app and the accounts it runs, after that
  * check, and rechecks the caller's use of the app with its accounts in one more statement. An
- * OAuth account's grant is read in one more, and the organization's risk policy for the tool, with
- * its override, in one more. The statement count under `mcp.tool.call`, outside
+ * OAuth account's grant is read in one more. The statement count under `mcp.tool.call`, outside
  * the app's own runtime, is the regression guard. When the call ends, the tool call log records it
  * in one more statement, counted on its own: a call that succeeded does not wait for it, so the
  * write ends after the call's own span.
@@ -292,24 +290,20 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
         });
         expect(
           keyCall.count,
-          // JHPATCH: and the risk policy read.
-          "Authentication, the check's read of the app, one access and links check, the call's two reads, one recheck and the risk policy read",
-        ).toBe(7);
+          "Authentication, the check's read of the app, one access and links check, the call's two reads and one recheck",
+        ).toBe(6);
         expect(
           oauthCall.count,
-          // JHPATCH: the key account's count includes the risk policy read.
           "The key account's statements and one read of the OAuth grant",
-        ).toBe(8);
+        ).toBe(7);
         expect(
           emptyCall.count,
-          // JHPATCH: and the risk policy read.
-          "Authentication, the check's read of the app, one access and links check, the call's read of the app, one recheck and the risk policy read",
-        ).toBe(6);
+          "Authentication, the check's read of the app, one access and links check, the call's read of the app and one recheck",
+        ).toBe(5);
         expect(
           appCall.count,
-          // JHPATCH: and the risk policy read.
-          "Authentication, the check's read of the app, one access check, the call's read of the app, one recheck and the risk policy read",
-        ).toBe(6);
+          "Authentication, the check's read of the app, one access check, the call's read of the app and one recheck",
+        ).toBe(5);
         for (const [label, call] of [
           ["key", keyCall],
           ["oauth", oauthCall],

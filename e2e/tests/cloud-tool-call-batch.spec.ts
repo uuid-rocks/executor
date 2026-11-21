@@ -298,11 +298,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               const [alone] = warm.calls;
               // Recheck, BEGIN, app, access check with the links, accounts, app recheck, COMMIT.
               expect(alone?.batches).toEqual([{ statements: 7, writes: 1 }]);
-              // JHPATCH: the risk policy read is the one statement outside the batch.
-              expect(
-                alone?.statements,
-                "Every statement of the call but its risk policy read was in its batch",
-              ).toBe(6);
+              expect(alone?.statements, "Every statement of the call was in its batch").toBe(5);
               expect(alone?.logWrites, "The tool call log's one insert").toBe(1);
               const parallel = yield* run(
                 "Five calls in parallel",
@@ -316,8 +312,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               });
               for (const call of parallel.calls) {
                 expect(call.batches).toEqual([{ statements: 7, writes: 1 }]);
-                // JHPATCH: and the risk policy read outside the batch.
-                expect(call.statements).toBe(6);
+                expect(call.statements).toBe(5);
                 expect(call.logWrites).toBe(1);
               }
             }),

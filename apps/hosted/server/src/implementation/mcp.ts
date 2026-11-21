@@ -50,6 +50,8 @@ import { CurrentOrganization, OrganizationForbidden } from "../contracts/organiz
 import { CurrentMcpGrant, CurrentMcpSession, IssuedMcpSessionId } from "../contracts/mcp.ts";
 import type { ToolCallCaller } from "../contracts/tool-call-log.ts";
 import { loggedToolCall, loggedToolResume, recordCallDetails } from "./tool-call-log.ts";
+// JHPATCH: the call's risk policy comes from its access check's statement.
+import { RiskPolicyReadAhead } from "./tool-risk-policy.ts";
 import { patGrantOf } from "./mcp-oauth.ts";
 import { listTools, searchableTools, searchTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
@@ -302,7 +304,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
       const ahead = yield* SelectionReadAhead;
       const read =
         ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
-      const { version, accounts, kind } = yield* checkedToolCall(
+      // JHPATCH: the check also read the call's risk policy, so the call makes no read of its own.
+      const { version, accounts, kind, risk } = yield* checkedToolCall(
         executor,
         owner,
         input,
@@ -310,7 +313,9 @@ export const hostedMcpBackend = Effect.gen(function* () {
         read,
       );
       yield* recordCallDetails({ version, accounts, ...(kind === undefined ? {} : { kind }) });
-      const call = executor.tools.call({ ...input, version, accounts, kind }, options);
+      const call = executor.tools
+        .call({ ...input, version, accounts, kind }, options)
+        .pipe(Effect.provideService(RiskPolicyReadAhead, risk));
       // The check has finished: the call may read its state and recheck its accounts at once.
       return yield* (yield* ConcurrentStatements) !== undefined
         ? call.pipe(Effect.provideService(InvocationSelection, { app: input.app, owner, accounts }))
