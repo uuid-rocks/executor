@@ -80,9 +80,20 @@ jobs:
       - if: steps.pattern.outputs.run == 'true'
         run: bun run e2e:prepare
       - if: steps.pattern.outputs.run == 'true'
+        shell: bash
         env:
           PATTERN: ${{ needs.select.outputs[matrix.target] }}
-        run: xvfb-run -a bun run e2e:${{ matrix.target }} --test-name "$PATTERN"
+        run: |
+          if [ "${{ matrix.target }}" = self-host ]; then
+            xvfb-run -a bun run e2e:self-host --test-name "$PATTERN"
+            exit
+          fi
+          # One local Cloud per spec file; run every group and fail at the end if any failed.
+          failed=0
+          while IFS= read -r group; do
+            xvfb-run -a bun run e2e:cloud --test-name "$group" || failed=1
+          done < <(jq -r '.[]' <<<"$PATTERN")
+          exit "$failed"
       - if: failure() && steps.pattern.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
