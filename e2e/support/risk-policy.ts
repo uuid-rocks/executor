@@ -15,8 +15,9 @@ import { appsManifest } from "./apps-release.ts";
 /**
  * One tool per way a tier is set. `read` and `write` declare none, so they take their kind's
  * default; `erase` takes the default of its destructive hint and never asks on its own; `wipe`
- * declares one; `deploy` computes one from its input; `rotate` and `purge` get theirs from
- * `withRisk` and `withRisks`; `review` asks for approval itself; `archive` is recorded by default
+ * declares one; `deploy` computes one from its input; `rotate` gets its tier from `withRisk`, and
+ * `purge`'s `withRisk` is replaced by the outer `withRisks`; `review` asks for approval itself;
+ * `archive` is recorded by default
  * and takes the secrets the log must not keep.
  */
 const source = `
@@ -33,7 +34,7 @@ export default defineApp({}, async () => ({ tools: withRisks(router({
     risk: async ({ toolInput }) => (toolInput.env === "prod" ? "critical" : "low") },
     async (_, input) => ({ deployed: input.env })),
   rotate: withRisk(mutation({ description: "Rotate a key", input: record }, async (_, input) => ({ rotated: input.id })), "high"),
-  purge: query({ description: "Purge a cache", input: record }, async (_, input) => ({ purged: input.id })),
+  purge: withRisk(query({ description: "Purge a cache", input: record }, async (_, input) => ({ purged: input.id })), "low"),
   review: mutation({ description: "Needs approval", input: record, approval: always() }, async (_, input) => ({ reviewed: input.id })),
   archive: mutation({ description: "Archive with credentials", risk: "high",
     input: object({ id: string(), password: string(), note: string(), options: object({ apiKey: string(), label: string() }), memo: string() }) },

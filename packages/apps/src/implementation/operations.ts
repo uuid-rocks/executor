@@ -175,7 +175,12 @@ export const riskedOperation = <Input, Native extends AppOperation<Input, unknow
 ): Native => {
   // SAFETY: the copy has every own property of `operation`, with only `risk` replaced below.
   const copy = Object.defineProperties({}, Object.getOwnPropertyDescriptors(operation)) as Native;
-  return Object.defineProperty(copy, "risk", { enumerable: true, value: nativeRisk(risk) });
+  // Configurable, so a later `withRisks` over a `withRisk` can replace it again.
+  return Object.defineProperty(copy, "risk", {
+    enumerable: true,
+    configurable: true,
+    value: nativeRisk(risk),
+  });
 };
 
 /** Set the risk tier of a generated or shared operation. An `Approved` mark is kept. */
