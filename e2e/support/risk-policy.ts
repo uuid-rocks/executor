@@ -6,6 +6,7 @@
 import { expect } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { Actors } from "./actors.ts";
 import { Api, body, type Session } from "./api.ts";
 import { App } from "./contracts.ts";
@@ -156,3 +157,26 @@ export const labelSecrets = (value: unknown, labels: Readonly<Record<string, str
       JSON.stringify(value) ?? "null",
     ),
   );
+
+/** An HTTP API on loopback that answers every request and records its method and path. */
+export const recordsUpstream = Effect.gen(function* () {
+  const seen: Array<string> = [];
+  const server = yield* Effect.acquireRelease(
+    Effect.promise(
+      () =>
+        new Promise<ReturnType<typeof createServer>>((resolve) => {
+          const server = createServer((request, response) => {
+            seen.push(`${request.method} ${request.url}`);
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ method: request.method }));
+          });
+          server.listen(0, "127.0.0.1", () => resolve(server));
+        }),
+    ),
+    (server) => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+  );
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    return yield* Effect.die("The fixture must listen on TCP");
+  return { origin: `http://127.0.0.1:${address.port}`, seen: Effect.sync(() => [...seen]) };
+});

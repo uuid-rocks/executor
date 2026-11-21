@@ -12014,6 +12014,41 @@ export const scenarios = plan({
       local: na("Local has no organization tool call log."),
     },
   },
+  // JHPATCH: the risk policy on schedules, older builds and imported OpenAPI routers.
+  toolRiskScheduleAsk: {
+    fixtures: "actors",
+    file: "tool-risk-paths.spec.ts",
+    title:
+      "A schedule that approves automatically waits in the approvals inbox when the risk policy asks about its tool's tier, and approving the run runs the tool",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization risk policy."),
+    },
+  },
+  toolRiskOlderBuild: {
+    fixtures: "actors",
+    file: "tool-risk-paths.spec.ts",
+    title:
+      "An app built before risk tiers takes its tools' tiers from their kinds and hints; the risk policy blocks a tier it blocks and refuses a tier it asks about with a redeploy recovery",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization risk policy."),
+    },
+  },
+  toolRiskOpenapi: {
+    fixtures: "actors",
+    file: "tool-risk-paths.spec.ts",
+    title:
+      "An OpenAPI router lists a GET as low, a PUT as medium and a DELETE as high, and the risk policy blocks the DELETE before it reaches the API",
+    targets: {
+      "self-host": scheduled,
+      // The read reaches a loopback HTTP API, which only managed local Cloud's runtime can.
+      cloud: managedCloud,
+      local: na("Local has no organization risk policy."),
+    },
+  },
   mcpStaleRefresh: {
     fixtures: "actors",
     file: "mcp-oauth-refresh.spec.ts",
