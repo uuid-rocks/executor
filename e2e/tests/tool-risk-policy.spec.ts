@@ -395,6 +395,37 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy", (it) => {
             approval: { decision: "approved" },
           },
         ]);
+
+        // A block holds even for a call a person approves: the next call pauses, the policy then
+        // blocks its tier, and approving it refuses it. The log says the person approved it and
+        // the policy blocked it, not that the person declined it.
+        const second = yield* Schema.decodeUnknownEffect(Pending)(
+          yield* mcpTool(client, "Call the high-risk tool again", "call", {
+            calls: { path: `tools[${JSON.stringify(app.slug)}].erase`, input: { id: "e2" } },
+          }),
+        );
+        yield* editRiskPolicy(actors.admin, (tiers) => ({
+          ...tiers,
+          high: { ...tiers.high, approval: "deny" },
+        }));
+        const refused = yield* mcpTool(
+          client,
+          "Approve the call after the policy blocks its tier",
+          "resume",
+          { requestId: second.requestId, response: { action: "accept" } },
+        );
+        expect(refused, JSON.stringify(refused)).toMatchObject({
+          execution: { value: { ok: false, error: { response: { code: "ToolBlocked" } } } },
+        });
+        const blocked = yield* loggedCallsWhen(app.id, "erase", (items) =>
+          items.some((item) => item.status === "denied"),
+        );
+        expect(blocked.find((item) => item.status === "denied")).toMatchObject({
+          errorType: "ToolBlocked",
+          risk: "high",
+          riskAction: "deny",
+          approval: { decision: "approved" },
+        });
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

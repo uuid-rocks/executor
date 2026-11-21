@@ -173,7 +173,9 @@ const decided = (row: CallRow): "pending" | "approved" | "denied" | "expired" =>
     case "awaiting-approval":
       return "pending";
     case "denied":
-      return "denied";
+      // JHPATCH: a call approved and then blocked by the risk policy on resume was approved; only
+      // the policy refused it (its action reads `deny`).
+      return row.risk_action === "deny" ? "approved" : "denied";
     case "expired":
       return "expired";
     default:

@@ -11952,7 +11952,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "tool-risk-policy.spec.ts",
     title:
-      "A tier the risk policy asks about pauses a tool that never asks, even on an MCP connection that approves automatically, and approving it runs the call",
+      "A tier the risk policy asks about pauses a tool that never asks, even on an MCP connection that approves automatically, and approving it runs the call; a block set before the approval refuses it, logged as approved and then blocked",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
