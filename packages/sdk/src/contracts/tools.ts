@@ -2012,7 +2012,7 @@ export const ToolBlocked = UserFacingError.define({
 });
 export type ToolBlocked = typeof ToolBlocked.Type;
 
-// JHPATCH: the call did not run, and a risk policy's approval names the policy and tier.
+// JHPATCH: a risk policy's approval names the policy and the tier it asked about.
 const toolApprovalRequired = ({
   tool,
   policy,
@@ -2021,23 +2021,23 @@ const toolApprovalRequired = ({
   readonly tool: ToolName;
   readonly policy?: true | undefined;
   readonly risk?: RiskTier | undefined;
-}): RefusalCopy => {
-  const description =
-    policy === true
-      ? `The organization’s risk policy requires approval for ${riskName(risk)} tools, and this request cannot present an approval prompt, so this call to “${tool}” did not run.`
-      : `“${tool}” needs approval before it runs, and this request cannot present an approval prompt, so it did not run.`;
-  return {
-    message: description,
-    title:
-      policy === true ? "Approval required by the organization’s risk policy" : "Approval required",
-    description,
-  };
-};
-// JHPATCH: the tool never ran: approval is decided before its handler.
+}): RefusalCopy =>
+  policy === true
+    ? {
+        message: `The organization’s risk policy requires approval for ${riskName(risk)} tools before “${tool}” runs, and this request cannot present an approval prompt.`,
+        title: "Approval required by the organization’s risk policy",
+        description: `The organization’s risk policy requires approval for ${riskName(risk)} tools, and this request cannot present an approval prompt.`,
+      }
+    : {
+        message: `“${tool}” needs approval before it runs, and this request cannot present an approval prompt.`,
+        title: "Approval required",
+        description: `“${tool}” needs approval, and this request cannot present an approval prompt.`,
+      };
 /**
  * Adapter diagnostic for callers that cannot yet present a pending SDK approval request
- * (`approvalRequired`). Approval is decided before the tool's handler runs, so the call did not
- * run. `policy` says the organization's risk policy, not the app, asked, for the tier `risk`.
+ * (`approvalRequired`). The app's code asked for the approval, so for a call that may write the
+ * copy does not claim that the tool has not run. `policy` says the organization's risk policy
+ * asked, for the tier `risk`.
  */
 export const ToolApprovalRequired = ApiError.define({
   tag: "ToolApprovalRequired",
@@ -2199,11 +2199,12 @@ export const ToolPending = Schema.Struct({
 export const ToolCallResult = Schema.Union([ToolCompleted, ToolPending]);
 export type ToolCallResult = typeof ToolCallResult.Type;
 
-// JHPATCH: the paused call never ran, and the risk policy's approval names its tier.
 /**
- * The failure a caller reports when it cannot present a pending call's approval prompt. The call
- * paused before its tool ran, so it did not run.
+ * The failure a caller reports when it cannot present a pending call's approval prompt. The app's
+ * code asked for the approval after it received the call, so a call that may write (not a query)
+ * may already have made its change.
  */
+// JHPATCH: a risk policy's approval names its tier.
 export const approvalRequired = ({
   invocation,
   policy,
@@ -2213,6 +2214,7 @@ export const approvalRequired = ({
     app: invocation.app,
     version: invocation.version,
     tool: invocation.tool,
+    ...(invocation.kind === "query" ? {} : { mayHaveWritten: true as const }),
     ...(policy === true ? { policy, ...(risk === undefined ? {} : { risk }) } : {}),
   });
 /** Every way a live call fails. A resumed call is the same call, so it fails the same ways. */

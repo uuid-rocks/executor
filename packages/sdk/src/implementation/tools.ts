@@ -903,8 +903,7 @@ export const callFailure =
             ToolKindMismatch: (failure) => mayHaveWritten(ToolKindMismatch, failure),
             InputInvalid: (failure) => mayHaveWritten(InputInvalid, failure),
             ToolBlocked: (failure) => mayHaveWritten(ToolBlocked, failure),
-            // JHPATCH: approval is decided before the tool's handler, so it did not run.
-            ToolApprovalRequired: (failure) => failure,
+            ToolApprovalRequired: (failure) => mayHaveWritten(ToolApprovalRequired, failure),
             ToolPolicyFailed: (failure) => mayHaveWritten(ToolPolicyFailed, failure),
             StorageError: (failure) => mayHaveWritten(StorageError, failure),
             CredentialsError: (failure) => mayHaveWritten(CredentialsError, failure),

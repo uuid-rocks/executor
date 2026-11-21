@@ -12054,7 +12054,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "tool-risk-paths.spec.ts",
     title:
-      "An API call that needs approval is refused as one that did not run, naming the risk policy's tier when the policy asked",
+      "An API call that needs approval keeps the write warning, and names the risk policy's tier when the policy asked",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

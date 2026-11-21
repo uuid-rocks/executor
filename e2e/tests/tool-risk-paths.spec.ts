@@ -480,22 +480,21 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy paths", (it) 
         const actors = yield* Actors;
         const { path } = yield* deployRiskApp;
         const call = yield* caller(actors.owner, path);
-        // Approval is decided before a tool runs, so a caller that cannot give it is told the call
-        // did not run, not that it may have made its change.
+        // The app's own code decides an approval, and may write while it does, so a write that
+        // needs approval keeps the warning that it may have made its change.
         const reviewed = yield* call("review", { id: "r1" });
         expect(reviewed.status, JSON.stringify(reviewed.body)).toBe(409);
-        expect(reviewed.body).not.toHaveProperty("mayHaveWritten");
+        expect(reviewed.body).toMatchObject({ mayHaveWritten: true });
         expect(reviewed.body).not.toHaveProperty("policy");
-        expect((yield* body(ApprovalRequired, reviewed)).message).toBe(
-          "“review” needs approval before it runs, and this request cannot present an approval prompt, so it did not run.",
+        expect((yield* body(ApprovalRequired, reviewed)).message).toContain(
+          "“review” needs approval, and this request cannot present an approval prompt.",
         );
         // The default policy asks about critical calls: the refusal names the policy and tier.
         const wiped = yield* call("wipe", { id: "w1" });
         expect(wiped.status, JSON.stringify(wiped.body)).toBe(409);
-        expect(wiped.body).not.toHaveProperty("mayHaveWritten");
-        expect(wiped.body).toMatchObject({ policy: true, risk: "critical" });
-        expect((yield* body(ApprovalRequired, wiped)).message).toBe(
-          "The organization’s risk policy requires approval for critical-risk tools, and this request cannot present an approval prompt, so this call to “wipe” did not run.",
+        expect(wiped.body).toMatchObject({ mayHaveWritten: true, policy: true, risk: "critical" });
+        expect((yield* body(ApprovalRequired, wiped)).message).toContain(
+          "The organization’s risk policy requires approval for critical-risk tools, and this request cannot present an approval prompt.",
         );
       }),
     ),
