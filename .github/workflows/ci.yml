@@ -42,12 +42,14 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup
       - id: select
+        # Default `run` shells lack pipefail, so a failing selector would pass through `tee`.
+        shell: bash
         env:
           E2E_BODY: ${{ github.event.pull_request.body }}
           E2E_SPECS: ${{ github.event_name == 'workflow_dispatch' && inputs.specs || (github.event_name == 'push' && 'none' || '') }}
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [ -n "$BASE" ]; then E2E_CHANGED="$(git diff --name-only "$BASE"...HEAD)"; export E2E_CHANGED; fi
+          if [ -n "$BASE" ]; then E2E_CHANGED="$(git diff --name-only --diff-filter=d "$BASE"...HEAD)"; export E2E_CHANGED; fi
           node scripts/fork-ci-select.ts | tee -a "$GITHUB_OUTPUT"
 
   e2e:
@@ -61,7 +63,7 @@ jobs:
     steps:
       - id: pattern
         env:
-          PATTERN: ${{ matrix.target == 'cloud' && needs.select.outputs.cloud || needs.select.outputs.self-host }}
+          PATTERN: ${{ needs.select.outputs[matrix.target] }}
         run: |
           if [ -z "$PATTERN" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; echo "Nothing selected for ${{ matrix.target }}."; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
       - if: steps.pattern.outputs.run == 'true'
@@ -79,7 +81,7 @@ jobs:
         run: bun run e2e:prepare
       - if: steps.pattern.outputs.run == 'true'
         env:
-          PATTERN: ${{ matrix.target == 'cloud' && needs.select.outputs.cloud || needs.select.outputs.self-host }}
+          PATTERN: ${{ needs.select.outputs[matrix.target] }}
         run: xvfb-run -a bun run e2e:${{ matrix.target }} --test-name "$PATTERN"
       - if: failure() && steps.pattern.outputs.run == 'true'
         uses: actions/upload-artifact@v4
