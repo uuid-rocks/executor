@@ -70,6 +70,14 @@ const Execution = Schema.Struct({
   }),
 });
 
+// JHPATCH: every call also reads the organization's risk policy, outside the batches.
+/**
+ * The statement each call makes after its batches for the organization's risk policy and the
+ * tool's override. The batch the host sends with its checks reads per app, not per tool, so
+ * the risk read is one more statement after it.
+ */
+const riskPolicyRead = 1;
+
 /** What one MCP tool call did before its app ran. */
 interface CallTrace {
   /** `sql.pipeline` spans: each batch the call sent. */
@@ -332,7 +340,10 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             expect(made.execution, label).toEqual({ ok: true, value: expected.value });
             expect(made.trace.batches, `${label}: batches`).toBe(expected.batches);
             if (expected.statements !== undefined)
-              expect(made.trace.statements, `${label}: statements`).toBe(expected.statements);
+              // JHPATCH: the counts below are the call's checks and reads; the risk read follows.
+              expect(made.trace.statements, `${label}: statements`).toBe(
+                expected.statements + riskPolicyRead,
+              );
             expect(made.trace.logWrites, `${label}: the tool call log's one insert`).toBe(1);
           });
 
@@ -355,12 +366,16 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             const oauthFirst = yield* call(first, oauth, "OAuth account, first call");
             recorded["oauth, first"] = oauthFirst.trace;
             expect(oauthFirst.trace.batches, "OAuth account, first call").toBe(2);
-            expect(oauthFirst.trace.statements, "OAuth account, first call").toBe(7);
+            // JHPATCH: and the risk policy read.
+            expect(oauthFirst.trace.statements, "OAuth account, first call").toBe(
+              7 + riskPolicyRead,
+            );
             const oauthWarm = yield* call(first, oauth, "OAuth account, warm call");
             recorded["oauth, warm"] = oauthWarm.trace;
             expect(oauthWarm.trace.batches, "OAuth account, warm call").toBe(1);
             // The key account's five and its grant, read in the batch rather than after it.
-            expect(oauthWarm.trace.statements).toBe(6);
+            // JHPATCH: and the risk policy read.
+            expect(oauthWarm.trace.statements).toBe(6 + riskPolicyRead);
             expect(oauthWarm.trace.liveGrantReads).toBe(0);
             yield* expectCall(
               "accountless, first",

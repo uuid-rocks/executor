@@ -295,7 +295,10 @@ const listCalls = (query: ToolCallQuery) =>
     const riskRank = query.risk === undefined ? null : riskRanks[query.risk];
     const rank = sql`(case c.risk when 'low' then 0 when 'medium' then 1 when 'high' then 2
       when 'critical' then 3 end)`;
-    const asked = sql`c.approval_id is not null or c.error_type = 'ToolApprovalRequired'`;
+    // JHPATCH: `is not distinct from`, so a call with no error is false, not null, and
+    // `approval=none` finds it.
+    const asked = sql`c.approval_id is not null
+      or c.error_type is not distinct from 'ToolApprovalRequired'`;
     const scope: Statement.Fragment = sql`c.organization_id = ${access.organization}
       and (${access.own}::text is null or c.user_id = ${access.own})
       and c.started_at >= ${kept}::timestamptz`;

@@ -1,7 +1,10 @@
+// JHPATCH: the log keeps a call's arguments when the risk policy records its tier.
 /**
  * The tool call log: each hosted tool call made through the API, the dashboard or MCP is one row an
- * admin can find by the reference a failed call returns. It names who called which tool and how the
- * call ended, never what the caller sent or what the tool returned. Members read only their own.
+ * admin can find by the reference a failed call returns. It names who called which tool, its risk
+ * tier and how the call ended, never what the tool returned. What the caller sent is kept only for
+ * a tier the organization's risk policy records (`tool-risk-log.spec.ts`); these scenarios call low
+ * and medium tools, which the default policy does not record. Members read only their own.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
@@ -32,10 +35,12 @@ const reference = /^call_[0-9a-hjkmnp-tv-z]{14}$/u;
 const callLogNote =
   "Executor's reference for this tool call. Quote it to an organization admin, who can find the call in Executor's tool call log by searching for it.";
 
+// JHPATCH: these tools' tiers are not recorded, so their arguments stay out of the log.
 /**
  * Tools that succeed, throw, fail with a service's 403 and need approval. `echo` returns what it
  * was sent beside a result only this scenario's app holds; `explode` repeats what it was sent in its
- * error. Neither may reach the log.
+ * error. Both are low-risk reads, whose arguments the default risk policy does not record, and no
+ * result or error text ever reaches the log.
  */
 const appSource = (resultMarker: string) => `
 import { defineApp, mutation, query, object, string, router, ProviderError } from "apps";
@@ -76,6 +81,10 @@ const Call = Schema.Struct({
   app: Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) }),
   tool: Schema.NullOr(Schema.String),
   kind: Schema.NullOr(Schema.String),
+  // JHPATCH: the risk tier, what the risk policy did and the arguments it recorded.
+  risk: Schema.NullOr(Schema.String),
+  riskAction: Schema.NullOr(Schema.String),
+  arguments: Schema.NullOr(Schema.Unknown),
   accounts: Schema.Array(
     Schema.Struct({
       id: Schema.NullOr(Schema.String),
@@ -532,6 +541,10 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
           app: { id: app.id, name: app.name },
           tool: "explode",
           kind: "query",
+          // JHPATCH: a query is low risk, which the default policy neither asks about nor records.
+          risk: "low",
+          riskAction: null,
+          arguments: null,
           status: "failed",
           errorType: "ToolCallFailed",
           statusCode: null,
@@ -543,6 +556,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
         expect(yield* findCall(actors.owner, forbidden.reference ?? "")).toMatchObject({
           tool: "forbidden",
           kind: "mutation",
+          // JHPATCH: a write is medium risk, which the default policy does not record either.
+          risk: "medium",
+          arguments: null,
           status: "failed",
           statusCode: 403,
         });
@@ -598,7 +614,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
           errorType: "VersionNotFound",
         });
 
-        // Neither the caller's arguments nor the tool's result or error text reach the log.
+        // JHPATCH: arguments reach the log only for a tier the risk policy records.
+        // The caller's arguments to these low and medium calls, which the default risk policy does
+        // not record, and the tool's result and error text do not reach the log.
         const { raw: filters } = yield* readFilters(actors.admin);
         for (const [label, raw] of [
           ["list", all.raw],

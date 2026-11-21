@@ -155,6 +155,9 @@ catch (error) { return { reference: error.reference }; }`,
 });
 
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// JHPATCH: the Approval filter's name also starts with "App".
+/** The App filter's row, named by its label and current choice, and not the Approval filter's. */
+const appFilter = /^App(?!roval)/u;
 const summary = (page: Page) => page.getByRole("status").first();
 const calls = (page: Page) => page.getByRole("list", { name: "Tool calls", exact: true });
 /** The summary once it reads `text`, after the list it counts has loaded. */
@@ -279,10 +282,17 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           page.getByRole("button", { name: "Filter", exact: true }).click(),
         );
         const loading = yield* browser.use("Read the filters while their choices load", filterRows);
-        expect(loading.map((row) => row.text?.split(/All |Last /u)[0])).toEqual([
+        // JHPATCH: the risk, kind and approval filters follow status; each row's text is its
+        // label then its current choice, whose wording differs by filter.
+        expect(
+          loading.map((row) => row.text?.split(/All |Last |Reads and writes|Asked or not/u)[0]),
+        ).toEqual([
           "Member",
           "App",
           "Status",
+          "Risk",
+          "Kind",
+          "Approval",
           "Agent",
           "Connection",
           "Time range",
@@ -290,7 +300,8 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         yield* browser.use("A filter's choices say they are loading", (page) =>
           page
             .getByRole("group", { name: "Filters" })
-            .getByRole("menuitem", { name: /^App/u })
+            // JHPATCH: not the Approval filter.
+            .getByRole("menuitem", { name: appFilter })
             .hover()
             .then(() =>
               page
@@ -342,7 +353,8 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
             .then((stayed) =>
               // App is above Status, so the pointer does not cross the way to Status's choices.
               filters
-                .getByRole("menuitem", { name: /^App/u })
+                // JHPATCH: not the Approval filter.
+                .getByRole("menuitem", { name: appFilter })
                 .hover()
                 .then(() => page.getByRole("group", { name: "App", exact: true }).waitFor())
                 .then(() => failed.waitFor({ state: "detached" }))

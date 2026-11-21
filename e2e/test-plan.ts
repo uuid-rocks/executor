@@ -11914,6 +11914,106 @@ export const scenarios = plan({
       local: na("Local's tool runner has no call log."),
     },
   },
+  // JHPATCH: tool risk tiers and the organization risk policy.
+  toolRiskListings: {
+    fixtures: "actors",
+    file: "tool-risk-policy.spec.ts",
+    title:
+      "Tool listings show each tool's declared, computed or default risk tier, including tiers set with withRisk and withRisks",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The risk policy that acts on tiers is an organization's; Local has none."),
+    },
+  },
+  toolRiskImportedMcp: {
+    fixtures: "actors",
+    file: "tool-risk-policy.spec.ts",
+    title:
+      "An imported MCP server's tools take their risk tier from its read-only and destructive hints",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("The risk policy that acts on tiers is an organization's; Local has none."),
+    },
+  },
+  toolRiskEnforcement: {
+    fixtures: "actors",
+    file: "tool-risk-policy.spec.ts",
+    title:
+      "Over MCP the risk policy blocks critical calls before they run, a tier computed from the input blocks production and runs staging, and an admin's override changes the tier a call is evaluated at",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization risk policy."),
+    },
+  },
+  toolRiskAskAutomatic: {
+    fixtures: "actors",
+    file: "tool-risk-policy.spec.ts",
+    title:
+      "A tier the risk policy asks about pauses a tool that never asks, even on an MCP connection that approves automatically, and approving it runs the call",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization risk policy."),
+    },
+  },
+  toolRiskPolicyAccess: {
+    fixtures: "actors",
+    file: "tool-risk-policy.spec.ts",
+    title:
+      "Members read the risk policy and the overrides of apps they may use but cannot change it, and an edit from a stale revision is refused",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization members or risk policy."),
+    },
+  },
+  toolRiskLogFilters: {
+    fixtures: "actors",
+    file: "tool-risk-log.spec.ts",
+    title:
+      "The tool call log records each call's risk tier and what the policy did, and filters by tier and above, by kind and by whether approval was asked",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolRiskLogArguments: {
+    fixtures: "actors",
+    file: "tool-risk-log.spec.ts",
+    title:
+      "A tier the policy records keeps a call's arguments with secrets removed and long values cut, a tier it does not record keeps none, and a member reads their own call's arguments but not another member's call",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolRiskPolicyPage: {
+    fixtures: "actors",
+    file: "tool-risk-policy-page.spec.ts",
+    title:
+      "Admins change the risk policy and add and remove a tool override on the Risk policy page; members see it read-only",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization risk policy."),
+    },
+  },
+  toolRiskActivity: {
+    fixtures: "actors",
+    file: "tool-risk-policy-page.spec.ts",
+    title:
+      "Admins filter Activity to high-risk calls and read a call's tier, the policy's action and its recorded arguments, secrets removed, in its details",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
   mcpStaleRefresh: {
     fixtures: "actors",
     file: "mcp-oauth-refresh.spec.ts",
