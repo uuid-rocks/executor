@@ -47,21 +47,17 @@ const selected = (target: (typeof targets)[number]) =>
       (requested._tag === "All" || files.has(scenario.file))
     );
   });
-const patternOf = (titles: ReadonlyArray<string>) =>
-  requested._tag === "All" ? "." : `^(?:${titles.map(escape).join("|")})$`;
+const patternOf = (titles: ReadonlyArray<string>) => `^(?:${titles.map(escape).join("|")})$`;
 
 const selfHost = selected("self-host").map((scenario) => scenario.title);
-console.log(`self-host=${selfHost.length === 0 ? "" : patternOf(selfHost)}`);
+console.log(
+  `self-host=${selfHost.length === 0 ? "" : requested._tag === "All" ? "." : patternOf(selfHost)}`,
+);
 
 // Some Cloud scenarios lock tables or count every request in the shared local Cloud, so each spec
 // file gets a local Cloud of its own, run one after another (a JSON array of patterns).
 const cloudFiles = new Map<string, Array<string>>();
 for (const scenario of selected("cloud"))
   cloudFiles.set(scenario.file, [...(cloudFiles.get(scenario.file) ?? []), scenario.title]);
-const cloud =
-  cloudFiles.size === 0
-    ? []
-    : requested._tag === "All"
-      ? ["."]
-      : [...cloudFiles.values()].map(patternOf);
+const cloud = [...cloudFiles.values()].map(patternOf);
 console.log(`cloud=${cloud.length === 0 ? "" : JSON.stringify(cloud)}`);
