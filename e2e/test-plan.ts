@@ -12019,7 +12019,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "tool-risk-paths.spec.ts",
     title:
-      "A schedule that approves automatically waits in the approvals inbox when the risk policy asks about its tool's tier, and approving the run runs the tool",
+      "A schedule that approves automatically waits in the approvals inbox when the risk policy asks about its tool's tier, approving or declining the run decides it, and the tool call log records each run's call with its member, tier, arguments and who answered",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -12030,7 +12030,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "tool-risk-paths.spec.ts",
     title:
-      "An app built before risk tiers takes its tools' tiers from their kinds and hints; the risk policy blocks a tier it blocks and refuses a tier it asks about with a redeploy recovery",
+      "An app built before risk tiers lists and enforces its tools' tiers from their kinds and hints; the risk policy blocks a tier it blocks and refuses a tier it asks about with a redeploy recovery",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -12046,6 +12046,18 @@ export const scenarios = plan({
       "self-host": scheduled,
       // The read reaches a loopback HTTP API, which only managed local Cloud's runtime can.
       cloud: managedCloud,
+      local: na("Local has no organization risk policy."),
+    },
+  },
+  // JHPATCH: an API call refused for approval says it did not run.
+  toolRiskApprovalRequired: {
+    fixtures: "actors",
+    file: "tool-risk-paths.spec.ts",
+    title:
+      "An API call that needs approval is refused as one that did not run, naming the risk policy's tier when the policy asked",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
       local: na("Local has no organization risk policy."),
     },
   },

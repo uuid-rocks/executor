@@ -1,7 +1,10 @@
 /** Effect-only host lifecycle. These privileged operations are not mounted on the SDK HTTP API. */
 import { Context, Effect } from "effect";
-import type { ScheduledRun } from "./schedules.ts";
-import type { AppId, OwnerId, StorageError } from "./shared.ts";
+// JHPATCH: the types a scheduled run's tool calls are described with.
+import type { ScheduledRun, ScheduledRunId, ScheduleId } from "./schedules.ts";
+import type { AppId, ApprovalRequestId, Json, OwnerId, StorageError, ToolName } from "./shared.ts";
+import type { AppAccounts } from "./apps.ts";
+import type { ToolCallResult, ToolKind, ToolResumeResult } from "./tools.ts";
 
 /** Authorize the saved actor against current product membership and app/account access before every dispatch. */
 export interface ScheduleAuthority {
@@ -35,3 +38,41 @@ export const ScheduleObservation = Context.Reference<{
     >,
   ) => Effect.Effect<void>;
 }>("executor/ScheduleObservation", { defaultValue: () => ({ completed: () => Effect.void }) });
+
+// JHPATCH: hosts log the tool calls scheduled runs make, as they log their callers' calls.
+/** The scheduled run a tool call or resume belongs to, as {@link ScheduledToolCalls} is told. */
+export interface ScheduledCall {
+  readonly owner: OwnerId;
+  readonly app: AppId;
+  /** The member the run acts for; null for an app schedule. */
+  readonly actor: string | null;
+  readonly schedule: { readonly id: ScheduleId; readonly name: string };
+  readonly run: ScheduledRunId;
+}
+/** The tool call a scheduled run makes. */
+export interface ScheduledToolCall {
+  readonly tool: ToolName;
+  readonly kind: ToolKind;
+  readonly input: Json;
+  readonly accounts: AppAccounts;
+}
+/**
+ * Host-only: wraps each tool call a scheduled run makes, and each resume of a call that paused for
+ * approval, so the host can record them. Each must return `work`'s outcome unchanged.
+ */
+export interface ScheduledToolCallHooks {
+  readonly call: <E, R>(
+    run: ScheduledCall,
+    call: ScheduledToolCall,
+    work: Effect.Effect<ToolCallResult, E, R>,
+  ) => Effect.Effect<ToolCallResult, E, R>;
+  readonly resume: <E, R>(
+    run: ScheduledCall,
+    requestId: ApprovalRequestId,
+    work: Effect.Effect<ToolResumeResult, E, R>,
+  ) => Effect.Effect<ToolResumeResult, E, R>;
+}
+export const ScheduledToolCalls = Context.Reference<ScheduledToolCallHooks | undefined>(
+  "executor/ScheduledToolCalls",
+  { defaultValue: () => undefined },
+);

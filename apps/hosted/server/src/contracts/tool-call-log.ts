@@ -47,14 +47,19 @@ export const ToolCallSource = Schema.Literals([
 ]);
 export type ToolCallSource = typeof ToolCallSource.Type;
 
+// JHPATCH: a schedule is a caller too.
 /**
  * What the request a call arrives on says about its caller. `sourceId` is the agent's grant (an
- * MCP or API OAuth grant, the row on the Connections tab) or the API key; the dashboard has none.
- * `session` is the MCP session the request named, `execution` the MCP execution it ran in.
+ * MCP or API OAuth grant, the row on the Connections tab), the API key or the schedule; the
+ * dashboard has none. `session` is the MCP session the request named, `execution` the MCP
+ * execution or scheduled run it ran in.
  */
 export interface ToolCallCaller {
   readonly source: ToolCallSource;
   readonly sourceId?: string | undefined;
+  // JHPATCH: a schedule names itself; agents and keys are named from their rows.
+  /** The source's name, for a schedule, whose name the log cannot read from a row of its own. */
+  readonly name?: string | undefined;
   readonly session?: string | undefined;
   readonly execution?: string | undefined;
 }
@@ -248,13 +253,15 @@ export const ToolCallPerson = Schema.Struct({
 export const ToolCall = Schema.Struct({
   id: ToolCallId,
   startedAt: Schema.Date,
-  /** Who the call ran as; null when the app ran it on its own, such as a schedule or webhook. */
+  // JHPATCH: a member's schedule runs as them; an app schedule as nobody.
+  /** Who the call ran as; null when the app ran it on its own, such as an app schedule. */
   member: Schema.NullOr(ToolCallPerson),
   source: Schema.Struct({
     kind: ToolCallSource,
-    /** The agent's grant or the API key; null for the dashboard. */
+    // JHPATCH: scheduled runs' calls are logged under their schedule.
+    /** The agent's grant, the API key or the schedule; null for the dashboard. */
     id: Schema.NullOr(Schema.String),
-    /** The agent's client or the key's name when the call was made. */
+    /** The agent's client, the key's or the schedule's name when the call was made. */
     name: Schema.NullOr(Schema.String),
     /**
      * The logo URL the agent's client registered (`logo_uri`), read through its grant; null for
@@ -267,7 +274,8 @@ export const ToolCall = Schema.Struct({
   ),
   /** The MCP session the call arrived on. */
   session: Schema.NullOr(Schema.String),
-  /** The MCP execution that made it: one `execute` program or one `call` batch. */
+  // JHPATCH: a scheduled run is a run too.
+  /** What made it: one MCP `execute` program or `call` batch, or one scheduled run. */
   run: Schema.NullOr(
     Schema.Struct({
       id: Schema.String,

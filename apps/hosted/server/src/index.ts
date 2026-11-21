@@ -156,6 +156,11 @@ export { resolveOrganizationReference } from "./implementation/organization-refe
 export * from "./contracts/schedules.ts";
 export { makeScheduledAuthority } from "./implementation/schedules.ts";
 export * from "./contracts/tool-call-log.ts";
-export { pruneToolCallLog, toolCallRetentionDays } from "./implementation/tool-call-log.ts";
+// JHPATCH: hosts log scheduled runs' tool calls.
+export {
+  makeScheduledToolCallLog,
+  pruneToolCallLog,
+  toolCallRetentionDays,
+} from "./implementation/tool-call-log.ts";
 // JHPATCH: hosts supply the organization risk policy to every tool call.
 export { makeToolRiskPolicy } from "./implementation/tool-risk-policy.ts";

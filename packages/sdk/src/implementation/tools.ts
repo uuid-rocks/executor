@@ -727,7 +727,13 @@ const runtimeFailure = (
             ? { ...identity, policy, ...(risk === undefined ? {} : { risk }) }
             : identity,
         ),
-      HostToolApprovalRequired: () => new ToolApprovalRequired(identity),
+      // JHPATCH: as for a block.
+      HostToolApprovalRequired: ({ policy }) =>
+        new ToolApprovalRequired(
+          policy === true
+            ? { ...identity, policy, ...(risk === undefined ? {} : { risk }) }
+            : identity,
+        ),
       HostToolPolicyFailed: () => new ToolPolicyFailed(identity),
       HostOutputInvalid: () => new ToolCallFailed({ ...identity, reason: "Tool execution failed" }),
       HostRequestInvalid: (error) => evaluationFailure(identity, error),
@@ -897,7 +903,8 @@ export const callFailure =
             ToolKindMismatch: (failure) => mayHaveWritten(ToolKindMismatch, failure),
             InputInvalid: (failure) => mayHaveWritten(InputInvalid, failure),
             ToolBlocked: (failure) => mayHaveWritten(ToolBlocked, failure),
-            ToolApprovalRequired: (failure) => mayHaveWritten(ToolApprovalRequired, failure),
+            // JHPATCH: approval is decided before the tool's handler, so it did not run.
+            ToolApprovalRequired: (failure) => failure,
             ToolPolicyFailed: (failure) => mayHaveWritten(ToolPolicyFailed, failure),
             StorageError: (failure) => mayHaveWritten(StorageError, failure),
             CredentialsError: (failure) => mayHaveWritten(CredentialsError, failure),
@@ -1535,6 +1542,18 @@ export const makeTools = (
       });
       return state;
     });
+  // JHPATCH: listings show the tier the risk policy enforces for builds that cannot evaluate one.
+  /**
+   * A tool as listed: a build from before risk tiers lists none, so it gets the tier the policy
+   * enforces for it (`fallbackRisk`), from its kind and hints.
+   */
+  const withListedRisk = <T extends Pick<Tool, "risk" | "readOnly" | "annotations">>(
+    state: InvocationSnapshot,
+    tool: T,
+  ): T =>
+    tool.risk !== undefined || state.version.requirements.capabilities?.riskPolicy === true
+      ? tool
+      : { ...tool, risk: defaultRiskTier(tool.readOnly === true, tool.annotations) };
   /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
   /** A catalog's tools as the listing store keeps them, sorted by name. */
   const toListing =
@@ -1548,7 +1567,8 @@ export const makeTools = (
       items: [...tools]
         .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         .map((tool) => ({
-          ...tool,
+          // JHPATCH: see `withListedRisk`.
+          ...withListedRisk(state, tool),
           app: state.app.id,
           version: state.version.id,
           name: ToolName.make(tool.name),
@@ -1804,7 +1824,8 @@ export const makeTools = (
         );
         const tool = yield* describe(state, context, input.tool);
         return {
-          ...tool,
+          // JHPATCH: see `withListedRisk`.
+          ...withListedRisk(state, tool),
           app: state.app.id,
           version: state.version.id,
           name: ToolName.make(tool.name),
@@ -1942,13 +1963,17 @@ export const makeTools = (
           if (Schema.is(HostToolApprovalRequired)(result.failure)) {
             // The request saves the caller's kind, so its pending response and its resumption
             // treat a call that named none as one that may write.
-            return yield* approvals.save(
+            // JHPATCH: kept to add the tier the policy asked about.
+            const pending = yield* approvals.save(
               yield* invocation(state, parsed.tool, named, result.failure.input),
               args,
               options?.issuer,
               // JHPATCH: the organization's risk policy asked, so automatic approval must not.
               result.failure.policy,
             );
+            return pending.policy === true && tier !== undefined
+              ? { ...pending, risk: tier }
+              : pending;
           }
           yield* observeFailure(failureSource(result.failure));
           return yield* Effect.fail(

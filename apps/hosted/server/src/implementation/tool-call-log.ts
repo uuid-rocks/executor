@@ -9,9 +9,12 @@
  * waits for it, at most `awaitedWriteTimeout`, because its reference is returned to the caller and
  * must lead to a written row, and a paused row must exist before it is resumed.
  *
- * JHPATCH: arguments are kept when the risk policy says so.
+ * JHPATCH: arguments are kept when the risk policy says so, and scheduled runs' calls are logged.
  * A call's arguments are kept, with secrets removed (`scrubArguments`), only when the
  * organization's risk policy records them for the tier the call was evaluated at.
+ *
+ * A scheduled run's calls are logged through the SDK's `ScheduledToolCalls` hook
+ * (`makeScheduledToolCallLog`), as calls of the member the run acts for.
  */
 import {
   AppProviderFailed,
@@ -32,6 +35,9 @@ import {
   type ToolName,
   type ToolResumeResult,
   type VersionId,
+  // JHPATCH: scheduled runs' calls are logged through the SDK's hook.
+  type ScheduledCall,
+  type ScheduledToolCallHooks,
 } from "@executor-js/sdk/core";
 import {
   Cause,
@@ -52,7 +58,8 @@ import { scrubArguments } from "./tool-call-arguments.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { HostedBackground } from "../contracts/executor.ts";
 import { GroupDatabase } from "../contracts/groups.ts";
-import { CurrentOrganization } from "../contracts/organization.ts";
+// JHPATCH: a scheduled run's calls are filed under the organization that owns the schedule.
+import { CurrentOrganization, OrganizationId } from "../contracts/organization.ts";
 import {
   ToolCallId,
   type ToolCallCaller,
@@ -377,7 +384,8 @@ const insertCall = (row: CallRow) =>
     const source: ToolCallSource = row.caller.source;
     const sourceId = row.caller.sourceId ?? null;
     const grant = source === "agent" ? sourceId : null;
-    // JHPATCH: also records the risk tier, the policy's action and the kept arguments.
+    // JHPATCH: also records the risk tier, the policy's action, the kept arguments and a
+    // schedule's name.
     const rows = yield* sql`with app as (
         select id, name from executor_apps where id = ${row.app} and owner = ${organization.owner}
       ), inserted as (
@@ -394,6 +402,7 @@ const insertCall = (row: CallRow) =>
               join "oauthClient" c on c."clientId" = g."clientId" where g.id = ${grant}::text)
             when 'api-key' then (select left(k.name, ${nameLength}) from apikey k
               where k.id = ${sourceId}::text)
+            when 'schedule' then left(${row.caller.name ?? null}::text, ${nameLength})
           end,
           (select g.connection from "mcpGrant" g where g.id = ${grant}::text),
           (select left(mc.name, ${nameLength}) from "mcpGrant" g
@@ -594,22 +603,27 @@ const updateResumed = (
   startedAt: number,
   // JHPATCH: the resume evaluates the risk policy again.
   risk: Pick<CallDetails, "risk" | "riskAction">,
+  // JHPATCH: a scheduled run's resume is not answered by its caller.
+  answerer: Answerer,
 ) =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const organization = yield* CurrentOrganization;
     const sql = yield* logDatabase;
-    const user = yield* CurrentUserId;
+    const user = answerer === "caller" ? yield* CurrentUserId : undefined;
     const answered = ending.status !== "expired";
     // Only an approved call runs again; a refusal or a lapse adds no running time.
     const ran = ending.status === "succeeded" || ending.status === "failed";
+    // JHPATCH: an answer already recorded (`recordScheduledAnswer`) is kept.
     const rows = yield* sql`update hosted_tool_calls set
         status = ${ending.status}, error_type = ${ending.errorType ?? null}::text,
         status_code = ${ending.statusCode ?? null}::integer,
-        decided_by = ${answered ? (user ?? null) : null}::text,
-        decided_by_name = (select left(u.name, ${nameLength}) from "user" u
-          where u.id = ${answered ? (user ?? null) : null}::text),
-        decided_at = ${answered ? timestamp(startedAt) : null}::timestamptz,
+        decided_by = coalesce(decided_by, ${answered ? (user ?? null) : null}::text),
+        decided_by_name = case when decided_by is null then (select left(u.name, ${nameLength})
+          from "user" u where u.id = ${answered ? (user ?? null) : null}::text)
+          else decided_by_name end,
+        decided_at = case when decided_by is null
+          then ${answered ? timestamp(startedAt) : null}::timestamptz else decided_at end,
         duration_ms = coalesce(duration_ms, 0) + ${ran ? Math.max(0, now - startedAt) : 0}::integer,
         risk = coalesce(${risk.risk ?? null}::text, risk),
         risk_action = coalesce(${recordedAction(risk.riskAction)}::text, risk_action)
@@ -622,6 +636,14 @@ const updateResumed = (
     )?.id;
   });
 
+// JHPATCH: a scheduled run's resume runs after a person answered elsewhere, or automatically.
+/**
+ * Who answered a resumed call's approval: the caller resuming it, or, for a scheduled run, nobody
+ * the resume knows. A person's answer in the approvals inbox is recorded when it is given
+ * (`recordScheduledAnswer`); an answer the schedule's approval mode gave names nobody.
+ */
+type Answerer = "caller" | "nobody";
+
 /**
  * Log the answer to a paused call's approval on the call's own row. The resume does not wait to
  * find the row: one statement after it updates the row by its request and returns the reference.
@@ -633,6 +655,8 @@ const updateResumed = (
 export const loggedToolResume = <E, R>(
   requestId: ApprovalRequestId,
   work: Effect.Effect<ToolResumeResult, E, R>,
+  // JHPATCH: see `Answerer`.
+  answerer: Answerer = "caller",
 ) =>
   Effect.gen(function* () {
     const startedAt = yield* Clock.currentTimeMillis;
@@ -650,7 +674,8 @@ export const loggedToolResume = <E, R>(
     const ending = Exit.isSuccess(exit) ? resumedEnding(exit.value) : undefined;
     let reference: ToolCallId | undefined;
     if (ending !== undefined) {
-      const update = updateResumed(requestId, ending, startedAt, risk);
+      // JHPATCH: see `Answerer`.
+      const update = updateResumed(requestId, ending, startedAt, risk, answerer);
       // A second attempt in the background, for an update that failed.
       const retried = detached(update.pipe(reported(backgroundWriteTimeout), Effect.asVoid));
       if (ending.status === "succeeded")
@@ -666,6 +691,93 @@ export const loggedToolResume = <E, R>(
     const logged: LoggedCall<ToolResumeResult, E> = { exit, reference };
     return logged;
   });
+
+// JHPATCH: scheduled runs' calls reach the log too.
+/**
+ * Record who answered a scheduled run's paused call in the approvals inbox, on the call's row: the
+ * run resumes later, without the person. An answer already recorded is kept. Waited for, so the
+ * answer is on the row before the run is woken; a failed write leaves the answer unnamed.
+ */
+export const recordScheduledAnswer = (requestId: ApprovalRequestId) =>
+  Effect.gen(function* () {
+    const user = yield* CurrentUserId;
+    if (user === undefined) return;
+    const now = yield* Clock.currentTimeMillis;
+    const organization = yield* CurrentOrganization;
+    const sql = yield* logDatabase;
+    yield* sql`update hosted_tool_calls set decided_by = ${user},
+        decided_by_name = (select left(u.name, ${nameLength}) from "user" u where u.id = ${user}),
+        decided_at = ${timestamp(now)}::timestamptz
+      where organization_id = ${organization.organization} and approval_id = ${requestId}
+        and source = 'schedule' and decided_by is null`;
+  }).pipe(awaited(), Effect.asVoid);
+
+const organizationPrefix = "organization:";
+/**
+ * The `ScheduledToolCalls` hosts supply. A scheduled run's call is logged as source `schedule`,
+ * named by its schedule, under the member the run acts for (none for an app schedule), with the run
+ * as its run. Its paused call waits for its row as a caller's does, and its resume updates that
+ * row. An owner other than an organization has no log.
+ */
+export const makeScheduledToolCallLog = (
+  database: GroupDatabase["Service"],
+): ScheduledToolCallHooks => {
+  const filed = (run: ScheduledCall) =>
+    run.owner.startsWith(organizationPrefix)
+      ? Option.getOrUndefined(
+          Schema.decodeUnknownOption(OrganizationId)(run.owner.slice(organizationPrefix.length)),
+        )
+      : undefined;
+  /** The services the log reads, which the run has no request to supply. */
+  const logged = <A, E, R>(
+    organization: OrganizationId,
+    run: ScheduledCall,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    effect.pipe(
+      Effect.provideService(GroupDatabase, database),
+      // The log reads only the organization and its owner; the role is no member's.
+      Effect.provideService(CurrentOrganization, {
+        organization,
+        owner: run.owner,
+        role: "member",
+      }),
+    );
+  return {
+    call: (run, call, work) => {
+      const organization = filed(run);
+      if (organization === undefined) return work;
+      return logged(
+        organization,
+        run,
+        loggedToolCall(
+          {
+            source: "schedule",
+            sourceId: run.schedule.id,
+            name: run.schedule.name,
+            execution: run.run,
+          },
+          { app: run.app, tool: call.tool, kind: call.kind, input: call.input },
+          true,
+          Effect.andThen(recordCallDetails({ accounts: call.accounts }), work),
+        ).pipe(
+          Effect.flatMap(({ exit }) => exit),
+          // The member the run acts for, as the run's own accounts are checked against.
+          Effect.provideService(CurrentUserId, run.actor ?? undefined),
+        ),
+      );
+    },
+    resume: (run, requestId, work) => {
+      const organization = filed(run);
+      if (organization === undefined) return work;
+      return logged(
+        organization,
+        run,
+        loggedToolResume(requestId, work, "nobody").pipe(Effect.flatMap(({ exit }) => exit)),
+      );
+    },
+  };
+};
 
 /**
  * Mark approvals that lapsed with no answer recorded as expired, then delete rows older than the

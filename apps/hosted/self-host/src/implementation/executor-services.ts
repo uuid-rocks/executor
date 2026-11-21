@@ -25,6 +25,8 @@ import {
   type RepositoryBackend,
   // JHPATCH: every tool call reads the organization's risk policy.
   ToolRiskPolicy,
+  // JHPATCH: scheduled runs' tool calls are logged.
+  ScheduledToolCalls,
 } from "@executor-js/sdk/core";
 import {
   HostedBackground,
@@ -50,6 +52,8 @@ import {
   pruneToolCallLog,
   // JHPATCH: every tool call reads the organization's risk policy.
   makeToolRiskPolicy,
+  // JHPATCH: scheduled runs' tool calls are logged.
+  makeScheduledToolCallLog,
 } from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
@@ -250,6 +254,8 @@ export const selfHostExecutorServices = <E, R>(
         Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
         // JHPATCH: the organization's risk policy for every tool call.
         Layer.succeed(ToolRiskPolicy, riskPolicy),
+        // JHPATCH: the schedule worker runs with these services, so its runs' calls are logged.
+        Layer.succeed(ScheduledToolCalls, makeScheduledToolCallLog(Effect.succeed(groupDatabase))),
         Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),
         // Self-host serves Git, like everything else, on its one origin.
         Layer.succeed(AppGitOrigins, () => [new URL(origin).origin]),

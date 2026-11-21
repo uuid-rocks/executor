@@ -6,6 +6,8 @@ import {
   withExecutorAnalytics,
   // JHPATCH: every tool call reads the organization's risk policy.
   makeToolRiskPolicy,
+  // JHPATCH: scheduled runs' tool calls are logged.
+  makeScheduledToolCallLog,
 } from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
@@ -14,6 +16,8 @@ import {
   BlobStore,
   StorageError,
   ToolRiskPolicy,
+  // JHPATCH: scheduled runs' tool calls are logged.
+  ScheduledToolCalls,
   type MarkdownReader,
 } from "@executor-js/sdk/core";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
@@ -76,6 +80,11 @@ export const cloudProductServices = Effect.fn(function* (
     Layer.succeed(
       ToolRiskPolicy,
       makeToolRiskPolicy(sql.pipe(Effect.mapError(() => new StorageError()))),
+    ),
+    // JHPATCH: the schedule coordinator runs with these services, so its runs' calls are logged.
+    Layer.succeed(
+      ScheduledToolCalls,
+      makeScheduledToolCallLog(sql.pipe(Effect.mapError(() => new GroupsUnavailable()))),
     ),
     Layer.succeed(HostedAppRuntime, {
       asset: ({ build, path }) =>

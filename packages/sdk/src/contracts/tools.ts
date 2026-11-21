@@ -2012,22 +2012,49 @@ export const ToolBlocked = UserFacingError.define({
 });
 export type ToolBlocked = typeof ToolBlocked.Type;
 
-const toolApprovalRequired = ({ tool }: { readonly tool: ToolName }): RefusalCopy => ({
-  message: `“${tool}” needs approval before it runs, and this request cannot present an approval prompt.`,
-  title: "Approval required",
-  description: `“${tool}” needs approval, and this request cannot present an approval prompt.`,
-});
+// JHPATCH: the call did not run, and a risk policy's approval names the policy and tier.
+const toolApprovalRequired = ({
+  tool,
+  policy,
+  risk,
+}: {
+  readonly tool: ToolName;
+  readonly policy?: true | undefined;
+  readonly risk?: RiskTier | undefined;
+}): RefusalCopy => {
+  const description =
+    policy === true
+      ? `The organization’s risk policy requires approval for ${riskName(risk)} tools, and this request cannot present an approval prompt, so this call to “${tool}” did not run.`
+      : `“${tool}” needs approval before it runs, and this request cannot present an approval prompt, so it did not run.`;
+  return {
+    message: description,
+    title:
+      policy === true ? "Approval required by the organization’s risk policy" : "Approval required",
+    description,
+  };
+};
+// JHPATCH: the tool never ran: approval is decided before its handler.
 /**
  * Adapter diagnostic for callers that cannot yet present a pending SDK approval request
- * (`approvalRequired`). The app's code asked for the approval, so for a call that may write the
- * copy does not claim that the tool has not run.
+ * (`approvalRequired`). Approval is decided before the tool's handler runs, so the call did not
+ * run. `policy` says the organization's risk policy, not the app, asked, for the tier `risk`.
  */
 export const ToolApprovalRequired = ApiError.define({
   tag: "ToolApprovalRequired",
   status: 409,
-  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+  fields: {
+    app: AppId,
+    version: VersionId,
+    tool: ToolName,
+    mayHaveWritten: MayHaveWritten,
+    policy: Schema.optional(Schema.Literal(true)),
+    risk: Schema.optional(RiskTier),
+  },
   message: refusalMessage(toolApprovalRequired),
-  recorded: () => "The tool needs approval, and this request cannot present an approval prompt.",
+  recorded: ({ policy }: { readonly policy?: true | undefined }) =>
+    policy === true
+      ? "The organization's risk policy requires approval, and this request cannot present an approval prompt."
+      : "The tool needs approval, and this request cannot present an approval prompt.",
 });
 export type ToolApprovalRequired = typeof ToolApprovalRequired.Type;
 
@@ -2164,22 +2191,29 @@ export const ToolPending = Schema.Struct({
   // JHPATCH: the organization's risk policy asked, so automatic approval modes must not answer.
   /** The organization's risk policy requires a person to approve: automatic approval never does. */
   policy: Schema.optionalKey(Schema.Literal(true)),
+  // JHPATCH: a caller that cannot ask names the tier the policy asked about.
+  /** With `policy`, the tier the policy asked about. */
+  risk: Schema.optionalKey(RiskTier),
 });
 /** Public outcome of an initial call. */
 export const ToolCallResult = Schema.Union([ToolCompleted, ToolPending]);
 export type ToolCallResult = typeof ToolCallResult.Type;
 
+// JHPATCH: the paused call never ran, and the risk policy's approval names its tier.
 /**
- * The failure a caller reports when it cannot present a pending call's approval prompt. The app's
- * code asked for the approval after it received the call, so a call that may write (not a query)
- * may already have made its change.
+ * The failure a caller reports when it cannot present a pending call's approval prompt. The call
+ * paused before its tool ran, so it did not run.
  */
-export const approvalRequired = ({ invocation }: Pick<typeof ToolPending.Type, "invocation">) =>
+export const approvalRequired = ({
+  invocation,
+  policy,
+  risk,
+}: Pick<typeof ToolPending.Type, "invocation" | "policy" | "risk">) =>
   new ToolApprovalRequired({
     app: invocation.app,
     version: invocation.version,
     tool: invocation.tool,
-    ...(invocation.kind === "query" ? {} : { mayHaveWritten: true as const }),
+    ...(policy === true ? { policy, ...(risk === undefined ? {} : { risk }) } : {}),
   });
 /** Every way a live call fails. A resumed call is the same call, so it fails the same ways. */
 const toolCallErrors = [

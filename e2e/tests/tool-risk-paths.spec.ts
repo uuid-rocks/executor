@@ -1,9 +1,11 @@
 // JHPATCH: the organization's risk policy on schedules, older builds and imported OpenAPI routers.
 /**
  * The risk policy acts on every way a tool is called and every way its tier is set. A schedule
- * that approves automatically still waits for a person when the policy asks. A build from before
- * risk policies cannot ask, so the policy blocks what it would ask about and says to redeploy. An
- * OpenAPI router's operations take their tier from their HTTP method.
+ * that approves automatically still waits for a person when the policy asks, and the tool call log
+ * records each of its runs' calls. A build from before risk policies cannot ask, so the policy
+ * blocks what it would ask about and says to redeploy; its tools list the tiers the policy
+ * enforces. An OpenAPI router's operations take their tier from their HTTP method. A caller that
+ * cannot answer an approval is told the call did not run.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
@@ -15,7 +17,12 @@ import { App } from "../support/contracts.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { openapiAppFiles } from "../support/authored-templates.ts";
-import { editRiskPolicy, recordsUpstream, riskApiKey } from "../support/risk-policy.ts";
+import {
+  deployRiskApp,
+  editRiskPolicy,
+  recordsUpstream,
+  riskApiKey,
+} from "../support/risk-policy.ts";
 
 const Run = Schema.Struct({ id: Schema.String, status: Schema.String });
 const Runs = Schema.Array(Run);
@@ -27,6 +34,28 @@ const LoggedCall = Schema.Struct({
   riskAction: Schema.NullOr(Schema.String),
 });
 const LogPage = Schema.Struct({ items: Schema.Array(LoggedCall) });
+const Person = Schema.NullOr(Schema.Struct({ id: Schema.NullOr(Schema.String) }));
+/** A scheduled run's call as the log records it. */
+const ScheduledCall = Schema.Struct({
+  ...LoggedCall.fields,
+  member: Person,
+  source: Schema.Struct({
+    kind: Schema.String,
+    id: Schema.NullOr(Schema.String),
+    name: Schema.NullOr(Schema.String),
+  }),
+  run: Schema.NullOr(Schema.Struct({ id: Schema.String })),
+  kind: Schema.NullOr(Schema.String),
+  arguments: Schema.NullOr(Schema.Struct({ value: Schema.Unknown, truncated: Schema.Boolean })),
+  approval: Schema.NullOr(Schema.Struct({ decision: Schema.String, decidedBy: Person })),
+});
+const ScheduledLog = Schema.Struct({ items: Schema.Array(ScheduledCall) });
+const Viewer = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
+const Settings = Schema.Struct({ id: Schema.String });
+const ApprovalRequired = Schema.Struct({
+  _tag: Schema.Literal("ToolApprovalRequired"),
+  message: Schema.String,
+});
 const Catalog = Schema.Struct({
   items: Schema.Array(Schema.Struct({ name: Schema.String, risk: Schema.optional(Schema.String) })),
 });
@@ -89,11 +118,18 @@ const loggedCallsWhen = (
 const tiersOf = (catalog: typeof Catalog.Type) =>
   Object.fromEntries(catalog.items.map((tool) => [tool.name, tool.risk]));
 
-const scheduledSource = `import { defineApp, mutation, userInterval, object, router } from "apps";
+/** The signed-in user's ID. */
+const userId = (actor: Session) =>
+  Effect.gen(function* () {
+    const api = yield* Api;
+    return (yield* body(Viewer, yield* api.request(actor, "GET", "/api/auth/get-session"))).user.id;
+  });
+
+const scheduledSource = `import { defineApp, mutation, userInterval, object, string, router } from "apps";
 import { never } from "apps/operations/approval";
-const purge = mutation({ description: "Purge old records", input: object({}), risk: "high", approval: never() },
+const purge = mutation({ description: "Purge old records", input: object({ older: string() }), risk: "high", approval: never() },
   async () => ({ purged: true }));
-export default defineApp({}, async () => ({ tools: router({ purge }), schedules: { nightly: userInterval({ minutes: 1 }, purge, {}) } }));`;
+export default defineApp({}, async () => ({ tools: router({ purge }), schedules: { nightly: userInterval({ minutes: 1 }, purge, { older: "30d" }) } }));`;
 
 /** The newest published `apps` release, built before risk tiers and the `riskPolicy` capability. */
 const beforeRisk = "0.0.1-beta.140";
@@ -147,12 +183,62 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy paths", (it) 
           { path: "index.ts", content: scheduledSource },
           appsManifest,
         ]);
+        // Shared, so the admin may use the app and answer its runs' approvals.
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${path}/access`),
+        );
+        const shared = yield* api.request(actors.owner, "PATCH", `${path}/access`, {
+          revision: access.revision,
+          audience: { kind: "everyone" },
+        });
+        expect(shared.status, JSON.stringify(shared.body)).toBe(200);
         const schedule = `${path}/schedules/nightly`;
         const configured = yield* api.request(actors.owner, "PATCH", schedule, {
           enabled: true,
           approvalMode: "automatic",
         });
         expect(configured.status, JSON.stringify(configured.body)).toBe(200);
+        const copy = (yield* body(Settings, configured)).id;
+        const [ownerId, adminId] = yield* Effect.all([userId(actors.owner), userId(actors.admin)]);
+        /** The admin's logged calls of the app once `done` holds. */
+        const loggedWhen = (done: (items: ReadonlyArray<typeof ScheduledCall.Type>) => boolean) =>
+          api.request(actors.admin, "GET", `${prefix}/tool-calls?app=${app.id}&range=24h`).pipe(
+            Effect.flatMap((response) => body(ScheduledLog, response)),
+            Effect.map((page) => page.items),
+            Effect.repeat({ until: done, schedule: Schedule.spaced("100 millis") }),
+            Effect.timeout("20 seconds"),
+          );
+        /** What the log says of one run's call. */
+        const loggedRun = (items: ReadonlyArray<typeof ScheduledCall.Type>, run: string) => {
+          const item = items.find((each) => each.run?.id === run);
+          return item === undefined
+            ? undefined
+            : {
+                member: item.member?.id,
+                source: item.source,
+                tool: item.tool,
+                kind: item.kind,
+                status: item.status,
+                risk: item.risk,
+                riskAction: item.riskAction,
+                arguments: item.arguments,
+                approval:
+                  item.approval === null
+                    ? null
+                    : { decision: item.approval.decision, decidedBy: item.approval.decidedBy?.id },
+              };
+        };
+        // Each run's call is logged as the schedule's, run as its member, with its arguments,
+        // which the default policy records for high calls.
+        const scheduled = {
+          member: ownerId,
+          source: { kind: "schedule", id: copy, name: "nightly" },
+          tool: "purge",
+          kind: "mutation",
+          risk: "high",
+          arguments: { value: { older: "30d" }, truncated: false },
+        };
         const runs = (pending?: boolean) =>
           api
             .request(
@@ -180,7 +266,14 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy paths", (it) 
         });
 
         // The schedule approves automatically, and the app never asks: the run finishes alone.
-        expect((yield* runOnce).status).toBe("succeeded");
+        const alone = yield* runOnce;
+        expect(alone.status).toBe("succeeded");
+        expect(
+          loggedRun(
+            yield* loggedWhen((items) => loggedRun(items, alone.id) !== undefined),
+            alone.id,
+          ),
+        ).toEqual({ ...scheduled, status: "succeeded", riskAction: null, approval: null });
 
         yield* editRiskPolicy(actors.admin, (tiers) => ({
           ...tiers,
@@ -193,28 +286,65 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy paths", (it) 
           "awaiting-approval",
         );
         expect((yield* runs(true)).map((run) => run.id)).toEqual([waiting.id]);
-        const endpoint = `${prefix}/scheduled-runs/${waiting.id}/approval`;
-        expect((yield* api.request(actors.owner, "GET", endpoint)).body).toMatchObject({
-          status: "pending",
+        const asked = { ...scheduled, riskAction: "ask" };
+        // The log shows the call waiting for approval, which the policy asked for.
+        expect(loggedRun(yield* loggedWhen(() => true), waiting.id)).toEqual({
+          ...asked,
+          status: "awaiting-approval",
+          approval: { decision: "pending", decidedBy: undefined },
+        });
+        /** Answer a waiting run in the inbox as `actor`, and wait for the run to end. */
+        const answer = (actor: Session, run: string, action: "accept" | "decline") =>
+          Effect.gen(function* () {
+            const endpoint = `${prefix}/scheduled-runs/${run}/approval`;
+            expect((yield* api.request(actor, "GET", endpoint)).body).toMatchObject({
+              status: "pending",
+            });
+            expect(
+              (yield* api.request(actor, "POST", endpoint, {
+                response: { action, content: {} },
+              })).body,
+            ).toEqual({ status: "answered" });
+            return yield* runs().pipe(
+              Effect.map((rows) => rows.find((each) => each.id === run)?.status),
+              Effect.repeat({
+                until: (status) =>
+                  status !== "awaiting-approval" && status !== "ready" && status !== "running",
+                schedule: Schedule.spaced("100 millis"),
+              }),
+              Effect.timeout("20 seconds"),
+            );
+          });
+
+        // The admin approves it in the inbox, which runs the tool; the log names the admin, not
+        // the schedule's member, as who approved it.
+        expect(yield* answer(actors.admin, waiting.id, "accept")).toBe("succeeded");
+        expect(yield* runs(true)).toEqual([]);
+        expect(
+          loggedRun(
+            yield* loggedWhen((items) => loggedRun(items, waiting.id)?.status === "succeeded"),
+            waiting.id,
+          ),
+        ).toEqual({
+          ...asked,
+          status: "succeeded",
+          approval: { decision: "approved", decidedBy: adminId },
         });
 
-        // Approving it runs the tool.
+        // Declining the next run refuses the call, and the log says who declined it.
+        const declined = yield* runOnce;
+        expect(declined.status).toBe("awaiting-approval");
+        expect(yield* answer(actors.owner, declined.id, "decline")).toBe("denied");
         expect(
-          (yield* api.request(actors.owner, "POST", endpoint, {
-            response: { action: "accept", content: {} },
-          })).body,
-        ).toEqual({ status: "answered" });
-        const finished = yield* runs().pipe(
-          Effect.map((rows) => rows.find((run) => run.id === waiting.id)?.status),
-          Effect.repeat({
-            until: (status) =>
-              status !== "awaiting-approval" && status !== "ready" && status !== "running",
-            schedule: Schedule.spaced("100 millis"),
-          }),
-          Effect.timeout("20 seconds"),
-        );
-        expect(finished).toBe("succeeded");
-        expect(yield* runs(true)).toEqual([]);
+          loggedRun(
+            yield* loggedWhen((items) => loggedRun(items, declined.id)?.status === "denied"),
+            declined.id,
+          ),
+        ).toEqual({
+          ...asked,
+          status: "denied",
+          approval: { decision: "denied", decidedBy: ownerId },
+        });
       }),
     ),
   );
@@ -223,7 +353,8 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy paths", (it) 
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const actors = yield* Actors;
+        const api = yield* Api,
+          actors = yield* Actors;
         const { app, path } = yield* deploy("Risk older build", [
           { path: "index.ts", content: olderSource },
           {
@@ -237,6 +368,15 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy paths", (it) 
           high: { ...tiers.high, approval: "deny" },
         }));
         const call = yield* caller(actors.owner, path);
+
+        // The build lists no tiers, so its tools list the tiers the policy enforces, from their
+        // kinds and hints, in the full listing and in the index the Tools tab reads.
+        const expected = { read: "low", write: "medium", erase: "high" };
+        for (const listing of [`${path}/tools`, `${path}/tools/index`]) {
+          const listed = yield* api.request(actors.owner, "GET", listing);
+          expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+          expect(tiersOf(yield* body(Catalog, listed)), listing).toEqual(expected);
+        }
 
         // The build cannot evaluate a tier, so Executor takes it from the tool's hints: a
         // destructive write is high, which the policy blocks.
@@ -329,6 +469,34 @@ layer(HostedLive, { excludeTestServices: true })("Tool risk policy paths", (it) 
           ["records.deleteRecord", "denied", "high", "deny"],
           ["records.getRecord", "succeeded", "low", null],
         ]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.toolRiskApprovalRequired.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors;
+        const { path } = yield* deployRiskApp;
+        const call = yield* caller(actors.owner, path);
+        // Approval is decided before a tool runs, so a caller that cannot give it is told the call
+        // did not run, not that it may have made its change.
+        const reviewed = yield* call("review", { id: "r1" });
+        expect(reviewed.status, JSON.stringify(reviewed.body)).toBe(409);
+        expect(reviewed.body).not.toHaveProperty("mayHaveWritten");
+        expect(reviewed.body).not.toHaveProperty("policy");
+        expect((yield* body(ApprovalRequired, reviewed)).message).toBe(
+          "“review” needs approval before it runs, and this request cannot present an approval prompt, so it did not run.",
+        );
+        // The default policy asks about critical calls: the refusal names the policy and tier.
+        const wiped = yield* call("wipe", { id: "w1" });
+        expect(wiped.status, JSON.stringify(wiped.body)).toBe(409);
+        expect(wiped.body).not.toHaveProperty("mayHaveWritten");
+        expect(wiped.body).toMatchObject({ policy: true, risk: "critical" });
+        expect((yield* body(ApprovalRequired, wiped)).message).toBe(
+          "The organization’s risk policy requires approval for critical-risk tools, and this request cannot present an approval prompt, so this call to “wipe” did not run.",
+        );
       }),
     ),
   );
