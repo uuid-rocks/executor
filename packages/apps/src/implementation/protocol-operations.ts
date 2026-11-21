@@ -2,6 +2,7 @@
 import type { Effect, Schema } from "effect";
 import type { OperationContext } from "../contracts/operations.ts";
 import type { ToolAnnotations } from "../contracts/tools.ts";
+import type { RiskTier } from "../contracts/protocols/current.ts";
 import type { JsonObject, JsonValue } from "../contracts/schema.ts";
 import { nativeOperation, operationDeclaration, type Operation } from "./operations.ts";
 import { fixedRouter } from "./router-catalog.ts";
@@ -15,6 +16,9 @@ interface ProtocolOperation {
   readonly title?: string | undefined;
   readonly readOnly?: boolean | undefined;
   readonly annotations?: ToolAnnotations | undefined;
+  // JHPATCH: a tier the protocol fixes for a write, such as an HTTP DELETE's.
+  /** The tier of the operation when it is a mutation; a query is always `low`. */
+  readonly risk?: RiskTier | undefined;
   readonly _meta?: JsonObject | undefined;
   readonly input: Schema.Decoder<JsonValue>;
   /** Checks and describes every returned value. */
@@ -43,6 +47,8 @@ export const protocolOperations = (
       ...(operation.title === undefined ? {} : { title: operation.title }),
       ...(operation.annotations === undefined ? {} : { annotations: operation.annotations }),
       ...(operation._meta === undefined ? {} : { _meta: operation._meta }),
+      // JHPATCH: the protocol's tier for a write.
+      ...(operation.risk === undefined || kind === "query" ? {} : { risk: operation.risk }),
       input: operation.input,
       ...(operation.output === undefined ? {} : { output: operation.output }),
       run: operation.run,

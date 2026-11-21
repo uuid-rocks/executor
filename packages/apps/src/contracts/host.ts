@@ -119,6 +119,7 @@ import {
   ResolvedAccounts,
   type SkillCatalogResponse,
   type TrustedToolApproval,
+  type InvocationRisk,
 } from "./protocols/current.ts";
 export { DeclaredRequirements, HostRequest } from "./protocols/current.ts";
 /**
@@ -165,7 +166,13 @@ export {
   HostError,
   HostResponse,
   HostInvocation,
+  // JHPATCH: risk tiers and policy for hosts.
+  RiskTier,
+  RiskAction,
+  InvocationRisk,
 } from "./protocols/current.ts";
+// JHPATCH: hosts derive a tool's tier the same way for builds that predate risk tiers.
+export { defaultRiskTier, higherRisk, riskTiers } from "./tools.ts";
 /** Raw host inputs; the host boundary parses and redacts these immediately. */
 export type ResolvedAccountsInput = typeof ResolvedAccounts.Encoded;
 
@@ -223,6 +230,8 @@ export interface HostContext {
   /** Trusted in-process tracing capability; never decoded from a public request. */
   readonly telemetry?: InvocationTelemetry;
   readonly approval?: TrustedToolApproval;
+  // JHPATCH: the organization's risk policy; hosts send it only to builds that declare `riskPolicy`.
+  readonly risk?: typeof InvocationRisk.Type;
   /** The data facet's SQLite storage, for apps that declare `sql`. Never exposed to app code. */
   readonly storage?: AppSqlStorage;
   /** The invocation's accounts as the host resolved them; see `HostAccount`. */

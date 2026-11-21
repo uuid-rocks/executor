@@ -947,7 +947,8 @@ export const makeSchedules = (
                       : finish(claim, "succeeded");
                     return;
                   }
-                  if (setting.approvalMode === "automatic") {
+                  // JHPATCH: an approval the organization's risk policy requires waits for a person.
+                  if (setting.approvalMode === "automatic" && response.policy !== true) {
                     yield* authorize({ ...setting, phase: "resume" });
                     yield* complete(
                       claim,

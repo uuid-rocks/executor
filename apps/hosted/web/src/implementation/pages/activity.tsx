@@ -7,6 +7,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
+  // JHPATCH: risk, kind and approval filters
+  Alert02Icon,
   BoxesIcon,
   Calendar03Icon,
   Cancel01Icon,
@@ -19,11 +21,15 @@ import {
   HourglassOffIcon,
   Key01Icon,
   RobotIcon,
+  // JHPATCH: risk, kind and approval filters
+  Shield01Icon,
+  PencilEdit02Icon,
   UnavailableIcon,
   UserIcon,
   WebhookIcon,
 } from "@hugeicons/core-free-icons";
-import type { App, Cursor } from "@executor-js/sdk";
+// JHPATCH: risk tiers on calls
+import type { App, Cursor, RiskTier, ToolKind } from "@executor-js/sdk";
 import type {
   ToolCall,
   ToolCallFilters,
@@ -216,6 +222,36 @@ const statusOrder: readonly ToolCallStatus[] = [
   "expired",
 ];
 
+// JHPATCH: risk tiers on calls
+const riskOrder: readonly RiskTier[] = ["low", "medium", "high", "critical"];
+const riskNames: Record<RiskTier, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  critical: "Critical",
+};
+/** High and critical calls stand out in the list; the others stay quiet. */
+const riskTones: Record<RiskTier, string> = {
+  low: "border text-muted-foreground",
+  medium: "border text-muted-foreground",
+  high: "border border-amber-500/40 bg-amber-500/10 font-medium text-amber-700 dark:text-amber-400",
+  critical: "border border-destructive/40 bg-destructive/10 font-medium text-destructive",
+};
+/** The Risk filter keeps calls at the chosen tier and above. */
+const riskChoices: Record<RiskTier, string> = {
+  low: "Low and above",
+  medium: "Medium and above",
+  high: "High and above",
+  critical: "Critical",
+};
+const kindOrder: readonly ToolKind[] = ["query", "mutation"];
+const kindChoices: Record<ToolKind, string> = { query: "Reads", mutation: "Writes" };
+const approvalOrder = ["requested", "none"] as const;
+const approvalChoices: Record<(typeof approvalOrder)[number], string> = {
+  requested: "Asked",
+  none: "Not asked",
+};
+
 type Person = NonNullable<ToolCall["member"]>;
 const personName = (person: Person) => person.name ?? person.email ?? "Unknown member";
 
@@ -273,7 +309,10 @@ export const failureReason = (call: ToolCall): string | undefined => {
     case "ToolElicitationFailed":
       return "The tool asked for more input and did not get it.";
     case "ToolBlocked":
-      return "The app's approval policy blocked the call.";
+      // JHPATCH: org risk policy blocks
+      return call.riskAction === "deny"
+        ? "The organization's risk policy blocked the call."
+        : "The app's approval policy blocked the call.";
     case "ToolApprovalRequired":
       return "The tool needs approval, and the caller could not ask for it.";
     case "ToolPolicyFailed":
@@ -472,6 +511,48 @@ const facetsFor = (
     })),
     fallback: "Another status",
   });
+  // JHPATCH: risk, kind and approval filters
+  facets.push(
+    {
+      name: "risk",
+      label: "Risk",
+      icon: Alert02Icon,
+      none: "All risks",
+      value: search.risk,
+      choices: riskOrder.map((tier) => ({
+        value: tier,
+        label: riskChoices[tier],
+        mark: <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden />,
+      })),
+      fallback: "Another risk",
+    },
+    {
+      name: "kind",
+      label: "Kind",
+      icon: PencilEdit02Icon,
+      none: "Reads and writes",
+      value: search.kind,
+      choices: kindOrder.map((kind) => ({
+        value: kind,
+        label: kindChoices[kind],
+        mark: <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} aria-hidden />,
+      })),
+      fallback: "Another kind",
+    },
+    {
+      name: "approval",
+      label: "Approval",
+      icon: Shield01Icon,
+      none: "Asked or not",
+      value: search.approval,
+      choices: approvalOrder.map((approval) => ({
+        value: approval,
+        label: approvalChoices[approval],
+        mark: <HugeiconsIcon icon={Shield01Icon} strokeWidth={2} aria-hidden />,
+      })),
+      fallback: "Another approval",
+    },
+  );
   if (every || agents.length > 0 || search.agent !== undefined)
     facets.push({
       name: "agent",
@@ -614,6 +695,13 @@ function FilterMenuContent({
       onChange({ range: next === defaultToolCallRange ? undefined : next });
     } else if (facet.name === "status") {
       onChange({ status: statusOrder.find((status) => status === value) });
+      // JHPATCH: risk, kind and approval filters
+    } else if (facet.name === "risk") {
+      onChange({ risk: riskOrder.find((tier) => tier === value) });
+    } else if (facet.name === "kind") {
+      onChange({ kind: kindOrder.find((kind) => kind === value) });
+    } else if (facet.name === "approval") {
+      onChange({ approval: approvalOrder.find((approval) => approval === value) });
     } else if (facet.name === "app") {
       onChange({ app: source.filters?.apps.find((app) => app.id === value)?.id });
     } else onChange({ [facet.name]: value === all ? undefined : value });
@@ -732,7 +820,8 @@ function Choices({
           <span className="min-w-0 truncate">{choice.label}</span>
         </DropdownMenuRadioItem>
       ))}
-      {loading && facet.name !== "status" && facet.name !== "range" && (
+      {/* JHPATCH: risk, kind and approval choices are fixed, never loaded */}
+      {loading && !fixedFacets.has(facet.name) && (
         <div role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
           Loading choices…
         </div>
@@ -740,6 +829,9 @@ function Choices({
     </DropdownMenuRadioGroup>
   );
 }
+
+// JHPATCH: risk, kind and approval choices are fixed, never loaded
+const fixedFacets = new Set<Facet["name"]>(["status", "risk", "kind", "approval", "range"]);
 
 const ChoiceMark = ({ children }: { readonly children: ReactNode }) => (
   <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
@@ -1013,6 +1105,10 @@ function NextPage({
         member: listKey.member,
         app: listKey.app,
         status: listKey.status,
+        // JHPATCH: risk, kind and approval filters
+        risk: listKey.risk,
+        kind: listKey.kind,
+        approval: listKey.approval,
         agent: listKey.agent,
         connection: listKey.connection,
         session: listKey.session,
@@ -1236,6 +1332,14 @@ function CallRow({
                   write
                 </span>
               )}
+              {/* JHPATCH: risk tiers on calls */}
+              {call.risk !== null && (
+                <span
+                  className={`whitespace-nowrap rounded px-1 text-[10px] leading-4 ${riskTones[call.risk]}`}
+                >
+                  {riskNames[call.risk].toLowerCase()} risk
+                </span>
+              )}
             </span>
             <span className="block text-xs text-muted-foreground min-[900px]:truncate">
               {appName(call)}
@@ -1419,6 +1523,17 @@ function CallDetail({
             {call.kind === "query" && " · Reads only"}
           </span>
         </Field>
+        {/* JHPATCH: risk tiers and recorded arguments */}
+        {call.risk !== null && (
+          <Field label="Risk">
+            {riskNames[call.risk]}
+            {call.riskAction !== null && (
+              <span className="block text-xs text-muted-foreground">
+                {call.riskAction === "deny" ? "Blocked by risk policy" : "Asked by risk policy"}
+              </span>
+            )}
+          </Field>
+        )}
         {call.version !== null && (
           <Field label="Version">
             <span className="font-mono text-xs">{call.version}</span>
@@ -1482,6 +1597,29 @@ function CallDetail({
           </Field>
         )}
       </dl>
+      {/* JHPATCH: recorded arguments */}
+      {call.arguments !== null && <Arguments recorded={call.arguments} />}
     </section>
+  );
+}
+
+// JHPATCH: recorded arguments
+/** The call's input as the risk policy kept it, with secrets already removed by the server. */
+function Arguments({ recorded }: { readonly recorded: NonNullable<ToolCall["arguments"]> }) {
+  return (
+    <div className="mt-3 border-t pt-3">
+      <h3 className="mb-1.5 text-[13px] text-muted-foreground">Arguments</h3>
+      <pre
+        aria-label="Arguments"
+        className="max-h-80 overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap wrap-anywhere"
+      >
+        {JSON.stringify(recorded.value, null, 2)}
+      </pre>
+      {recorded.truncated && (
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          Some values were too long to keep and were cut short.
+        </p>
+      )}
+    </div>
   );
 }

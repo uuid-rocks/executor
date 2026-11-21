@@ -141,6 +141,12 @@ export interface RuntimeCallTiming {
   };
 }
 
+// JHPATCH: the tier a bundle evaluated a call at, read from its reply for the risk policy and log.
+/** Receives the risk tier a tool call's reply reports, from builds that evaluate risk. */
+export const RuntimeCallRisk = Context.Reference<
+  ((tier: import("apps/contracts").RiskTier) => void) | undefined
+>("executor/RuntimeCallRisk", { defaultValue: () => undefined });
+
 /** Receives each runtime call's timing within one tool call. Telemetry only. */
 export const RuntimeCallTimings = Context.Reference<
   ((timing: RuntimeCallTiming) => void) | undefined

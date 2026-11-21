@@ -424,6 +424,7 @@ export const makeExecutions = (
     /**
      * Accept a policy approval at once, for a run whose MCP client already confirmed the call. The
      * approved call runs as a resumed one does, so its failures reach the caller the same way.
+     * An approval the organization's risk policy requires is offered instead.
      */
     const approveNow = (
       run: Run,
@@ -559,7 +560,8 @@ export const makeExecutions = (
                     Effect.flatMap((result): Effect.Effect<ToolCallResult, Error> =>
                       result.status === "completed"
                         ? Effect.succeed(result)
-                        : run.approval === "client"
+                        : // JHPATCH: the organization's risk policy needs a person, whatever the client's mode.
+                          run.approval === "client" && result.policy !== true
                           ? approveNow(run, backend, operation, result)
                           : Effect.succeed(offer(run, result)),
                     ),

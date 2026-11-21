@@ -85,6 +85,62 @@ MCP servers added from the dashboard are generated with the second rule. Edit
 the app's source to change it. Apps added earlier keep the source they were
 generated with.
 
+<!-- JHPATCH: risk tiers and the organization's risk policy. -->
+## Risk
+
+Every tool has a **risk tier**, shown on its page in the app's **Tools** tab:
+
+| Tier       | Meant for                                           |
+| ---------- | --------------------------------------------------- |
+| `low`      | Reads, or changes nothing that matters.             |
+| `medium`   | Ordinary writes.                                    |
+| `high`     | Changes that are hard to undo, such as deletes.     |
+| `critical` | Production changes, moving money or bulk actions.   |
+
+Declare the tier beside the approval. A function chooses it from the decoded
+input, like an approval function:
+
+```ts
+import { mutation } from "apps";
+
+mutation(
+  {
+    input: Deploy,
+    risk: ({ toolInput }) => (toolInput.environment === "production" ? "critical" : "low"),
+  },
+  deploy,
+);
+```
+
+A tool that declares no tier gets one from its kind. A query is `low`. A
+mutation is `medium`, or `high` when it is an HTTP `DELETE` or its hints say it
+is destructive, as an MCP server's `destructiveHint` does. Set the tier of a
+shared operation with `withRisk(operation, risk)`, and of each tool in an
+imported router with `withRisks(router, policy)`, which works like
+`withApprovals`:
+
+```ts
+import { withRisks } from "apps";
+
+withRisks(api, (tool, name) => (name.startsWith("payments.") ? "critical" : undefined));
+```
+
+In Cloud and self-hosted Executor, an organization's owners and admins choose
+what each tier does, on the **Risk policy** page:
+
+- **Use the app's approval**: the app's own approval decides.
+- **Always ask**: a person must approve, even when the app would not ask and
+  even on a connection that approves automatically.
+- **Block**: the call does not run.
+
+The stricter rule wins. The policy can make a tool ask or block it, but it
+never lets through a call the app's approval blocks or asks about. Owners and
+admins can also set one tool's tier, which replaces the tier the app declares.
+
+An app built with an `apps` release from before risk tiers runs at the tier its
+listing gives it. It cannot ask for approval its tier's policy requires, so
+such a call is blocked until the app is deployed again.
+
 ## What happens when a tool asks
 
 The call pauses. What you see next depends on the

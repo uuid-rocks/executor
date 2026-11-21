@@ -9,7 +9,8 @@ import type {
   QueryContext,
 } from "../contracts/context.ts";
 import type { AccountScope } from "../contracts/app.ts";
-import type { Approval } from "../approval.ts";
+import type { Approval, Risk } from "../approval.ts";
+import type { Risk as NativeRisk } from "../contracts/approval.ts";
 import type { ToolAnnotations } from "../contracts/tools.ts";
 import type { JsonObject } from "../contracts/schema.ts";
 import { decoderOf, schemaArgument, type Schema } from "./schema.ts";
@@ -104,9 +105,18 @@ export interface OperationOptions<Input, Output> {
   readonly input: Schema<Input, boolean>;
   readonly output?: Schema<Output, boolean>;
   readonly approval?: Approval<Input>;
+  // JHPATCH: the tool's risk tier, which the organization's risk policy acts on.
+  /** How risky a call is; see `Risk`. Without it, a query is `low` and a mutation `medium`. */
+  readonly risk?: Risk<Input>;
   readonly annotations?: ToolAnnotations;
   readonly _meta?: JsonObject;
 }
+// JHPATCH: author risk functions cross the Promise boundary like approvals.
+/** The native form of an author's tier or tier function. */
+export const nativeRisk = <Input>(risk: Risk<Input>): NativeRisk<Input> =>
+  typeof risk === "string"
+    ? risk
+    : (context) => fromPromise(async () => risk(context), "approval")();
 /** Adapt metadata and approval without running user code. */
 export const operationOptions = <Input, Output>(options: OperationOptions<Input, Output>) => {
   const approval = options.approval;
@@ -116,6 +126,8 @@ export const operationOptions = <Input, Output>(options: OperationOptions<Input,
     ...(options.annotations === undefined ? {} : { annotations: options.annotations }),
     ...(options._meta === undefined ? {} : { _meta: options._meta }),
     input: decoderOf(options.input),
+    // JHPATCH: the tool's risk tier.
+    ...(options.risk === undefined ? {} : { risk: nativeRisk(options.risk) }),
     ...(approval === undefined
       ? {}
       : {
@@ -151,6 +163,31 @@ export const withApproval = <Input, Output, Kind extends "query" | "mutation", C
     ...operation,
     [NativeOperation]: approvedOperation(operation[NativeOperation], approval),
   }) as Operation<Input, Output, Kind, Context> & Approved;
+
+// JHPATCH: risk tiers attach to generated and shared operations like approvals.
+/**
+ * Replace a native operation's risk tier. Property descriptors are copied so an output schema that
+ * a protocol adapter builds only when read stays lazy.
+ */
+export const riskedOperation = <Input, Native extends AppOperation<Input, unknown>>(
+  operation: Native,
+  risk: Risk<Input>,
+): Native => {
+  // SAFETY: the copy has every own property of `operation`, with only `risk` replaced below.
+  const copy = Object.defineProperties({}, Object.getOwnPropertyDescriptors(operation)) as Native;
+  return Object.defineProperty(copy, "risk", { enumerable: true, value: nativeRisk(risk) });
+};
+
+/** Set the risk tier of a generated or shared operation. An `Approved` mark is kept. */
+export const withRisk = <Input, Output, Kind extends "query" | "mutation", Context, Mark>(
+  operation: Operation<Input, Output, Kind, Context> & Mark,
+  risk: Risk<Input>,
+): Operation<Input, Output, Kind, Context> & Mark =>
+  // SAFETY: only the native operation changes; type-only marks such as `Approved` still hold.
+  ({
+    ...operation,
+    [NativeOperation]: riskedOperation(operation[NativeOperation], risk),
+  }) as Operation<Input, Output, Kind, Context> & Mark;
 
 /**
  * The advisory hints an operation carries, such as an MCP server's `destructiveHint`. App code

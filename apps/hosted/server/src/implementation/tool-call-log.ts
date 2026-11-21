@@ -8,17 +8,25 @@
  * was interrupted, does not wait for its row. A call that failed, was refused or paused for approval
  * waits for it, at most `awaitedWriteTimeout`, because its reference is returned to the caller and
  * must lead to a written row, and a paused row must exist before it is resumed.
+ *
+ * JHPATCH: arguments are kept when the risk policy says so.
+ * A call's arguments are kept, with secrets removed (`scrubArguments`), only when the
+ * organization's risk policy records them for the tier the call was evaluated at.
  */
 import {
   AppProviderFailed,
   ToolCallFailed,
   ToolBlocked,
   ToolCallKindObserved,
+  // JHPATCH: the log records each call's risk tier and what the risk policy did.
+  ToolCallRiskObserved,
   invocationAccounts,
   invocationEntries,
   type AppAccounts,
   type ApprovalRequestId,
   type AppId,
+  type RiskAction,
+  type RiskTier,
   type ToolCallResult,
   type ToolKind,
   type ToolName,
@@ -39,6 +47,8 @@ import {
   Schema,
 } from "effect";
 import { SqlClient, SqlError } from "effect/sql";
+// JHPATCH: arguments kept by the risk policy are scrubbed first.
+import { scrubArguments } from "./tool-call-arguments.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { HostedBackground } from "../contracts/executor.ts";
 import { GroupDatabase } from "../contracts/groups.ts";
@@ -161,6 +171,11 @@ interface CallDetails {
   version?: VersionId | undefined;
   kind?: ToolKind | undefined;
   accounts?: AppAccounts | undefined;
+  // JHPATCH: the risk tier, the policy's action and which tiers keep arguments.
+  risk?: RiskTier | undefined;
+  riskAction?: RiskAction | undefined;
+  /** The tiers whose calls the risk policy keeps the arguments of, as the call read the policy. */
+  recordsArguments?: Readonly<Record<RiskTier, boolean>> | undefined;
 }
 const LoggedCallDetails = Context.Reference<CallDetails | undefined>("hosted/LoggedCallDetails", {
   defaultValue: () => undefined,
@@ -199,6 +214,16 @@ const failed = (error: unknown): Ending => ({
   errorType: Schema.is(ErrorTag)(error) ? error._tag : "UnrecognizedFailure",
   statusCode: serviceStatus(error),
 });
+// JHPATCH: a risk policy block names its tier, for a call whose tier was not reported.
+/** The tier and action of a call the organization's risk policy blocked. */
+const policyBlock = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.findErrorOption(cause);
+  if (Option.isNone(error) || !Schema.is(ToolBlocked)(error.value)) return undefined;
+  const blocked = error.value;
+  if (blocked.policy !== true) return undefined;
+  // A build that cannot ask for approval is blocked where the policy asks for it.
+  return { risk: blocked.risk, riskAction: blocked.redeploy === true ? "ask" : "deny" } as const;
+};
 const endedWith = (cause: Cause.Cause<unknown>): Ending => {
   if (Cause.hasInterrupts(cause)) return { status: "failed", errorType: "Interrupted" };
   const error = Cause.findErrorOption(cause);
@@ -313,6 +338,8 @@ interface CallRow {
   readonly app: AppId;
   readonly tool: ToolName;
   readonly details: CallDetails;
+  // JHPATCH: arguments the risk policy keeps.
+  readonly arguments?: { readonly value: Schema.Json; readonly truncated: boolean } | undefined;
   readonly ending: Ending;
   readonly approval?: { readonly id: ApprovalRequestId; readonly expiresAt: number } | undefined;
   readonly startedAt: number;
@@ -332,6 +359,11 @@ const nameLength = 200;
 const recordedTool = (row: CallRow) =>
   row.ending.errorType === "ToolNotFound" ? null : row.tool.slice(0, nameLength);
 
+// JHPATCH: only what the risk policy changed is worth a column value.
+/** The policy's action as the log keeps it: only when it asked for approval or blocked the call. */
+const recordedAction = (action: RiskAction | undefined) =>
+  action === "ask" || action === "deny" ? action : null;
+
 /**
  * Insert a call's row and its accounts in one statement. Only an app of the caller's organization
  * gets a row: a call naming any other app has nothing to file it under. Names come from the rows
@@ -345,13 +377,15 @@ const insertCall = (row: CallRow) =>
     const source: ToolCallSource = row.caller.source;
     const sourceId = row.caller.sourceId ?? null;
     const grant = source === "agent" ? sourceId : null;
+    // JHPATCH: also records the risk tier, the policy's action and the kept arguments.
     const rows = yield* sql`with app as (
         select id, name from executor_apps where id = ${row.app} and owner = ${organization.owner}
       ), inserted as (
         insert into hosted_tool_calls (id, organization_id, user_id, user_name, source, source_id,
           source_name, connection_id, connection_name, session_id, run_id, app_id, app_name,
           version_id, tool, kind, status, error_type, status_code, approval_id,
-          approval_expires_at, started_at, duration_ms, trace_id)
+          approval_expires_at, started_at, duration_ms, trace_id, risk, risk_action, arguments,
+          arguments_truncated)
         select ${row.id}, ${organization.organization}, ${user ?? null}::text,
           (select left(u.name, ${nameLength}) from "user" u where u.id = ${user ?? null}::text),
           ${source}, ${sourceId}::text,
@@ -371,7 +405,10 @@ const insertCall = (row: CallRow) =>
           ${row.details.kind ?? null}::text, ${row.ending.status}, ${row.ending.errorType ?? null}::text,
           ${row.ending.statusCode ?? null}::integer, ${row.approval?.id ?? null}::text,
           ${row.approval === undefined ? null : timestamp(row.approval.expiresAt)}::timestamptz,
-          ${timestamp(row.startedAt)}::timestamptz, ${row.durationMs}::integer, ${row.traceId ?? null}::text
+          ${timestamp(row.startedAt)}::timestamptz, ${row.durationMs}::integer, ${row.traceId ?? null}::text,
+          ${row.details.risk ?? null}::text, ${recordedAction(row.details.riskAction)}::text,
+          ${row.arguments === undefined ? null : JSON.stringify(row.arguments.value)}::jsonb,
+          ${row.arguments?.truncated ?? null}::boolean
         from app
         returning id
       ), accounts as (
@@ -409,7 +446,13 @@ export interface LoggedCall<A, E> {
  */
 export const loggedToolCall = <E, R>(
   caller: ToolCallCaller | undefined,
-  call: { readonly app: AppId; readonly tool: ToolName; readonly kind?: ToolKind | undefined },
+  call: {
+    readonly app: AppId;
+    readonly tool: ToolName;
+    readonly kind?: ToolKind | undefined;
+    // JHPATCH: the arguments, kept when the risk policy says so.
+    readonly input?: Schema.Json | undefined;
+  },
   approvals: boolean,
   work: Effect.Effect<ToolCallResult, E, R>,
 ) =>
@@ -433,15 +476,27 @@ export const loggedToolCall = <E, R>(
       Effect.provideService(ToolCallKindObserved, (kind) => {
         details.kind = kind;
       }),
+      // JHPATCH: record the tier the call was evaluated at and what the policy did.
+      Effect.provideService(ToolCallRiskObserved, ({ tier, action }) => {
+        details.risk = tier;
+        details.riskAction = action;
+      }),
       Effect.onExit((exit) =>
         Effect.gen(function* () {
           const durationMs = Math.max(0, (yield* Clock.currentTimeMillis) - startedAt);
+          // JHPATCH: a policy block the SDK did not report, and the arguments the policy keeps.
+          if (details.risk === undefined && Exit.isFailure(exit))
+            Object.assign(details, policyBlock(exit.cause));
           const row = rowOf(exit, approvals, {
             id,
             caller,
             app: call.app,
             tool: call.tool,
             details,
+            arguments:
+              details.risk !== undefined && details.recordsArguments?.[details.risk] === true
+                ? scrubArguments(call.input)
+                : undefined,
             startedAt,
             durationMs,
             traceId: yield* traceId,
@@ -532,7 +587,14 @@ export const dashboardRunReference = (requestId: ApprovalRequestId) =>
  * running when the prune marks the row expired, and the SDK refuses an answer after the deadline,
  * so any other ending it reports is what happened. A row that already has an answer is left alone.
  */
-const updateResumed = (requestId: ApprovalRequestId, ending: Ending, startedAt: number) =>
+// JHPATCH: the resume evaluates the risk policy again and records its tier and action.
+const updateResumed = (
+  requestId: ApprovalRequestId,
+  ending: Ending,
+  startedAt: number,
+  // JHPATCH: the resume evaluates the risk policy again.
+  risk: Pick<CallDetails, "risk" | "riskAction">,
+) =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const organization = yield* CurrentOrganization;
@@ -548,7 +610,9 @@ const updateResumed = (requestId: ApprovalRequestId, ending: Ending, startedAt: 
         decided_by_name = (select left(u.name, ${nameLength}) from "user" u
           where u.id = ${answered ? (user ?? null) : null}::text),
         decided_at = ${answered ? timestamp(startedAt) : null}::timestamptz,
-        duration_ms = coalesce(duration_ms, 0) + ${ran ? Math.max(0, now - startedAt) : 0}::integer
+        duration_ms = coalesce(duration_ms, 0) + ${ran ? Math.max(0, now - startedAt) : 0}::integer,
+        risk = coalesce(${risk.risk ?? null}::text, risk),
+        risk_action = coalesce(${recordedAction(risk.riskAction)}::text, risk_action)
       where organization_id = ${organization.organization} and approval_id = ${requestId}
         and (status = 'awaiting-approval'
           or (status = 'expired' and ${ending.status}::text <> 'expired'))
@@ -572,11 +636,21 @@ export const loggedToolResume = <E, R>(
 ) =>
   Effect.gen(function* () {
     const startedAt = yield* Clock.currentTimeMillis;
-    const exit = yield* Effect.exit(work);
+    // JHPATCH: the tier the resumed call was evaluated at, and a policy block, replace the paused
+    // call's; an action the policy no longer takes keeps the one it took.
+    const risk: Pick<CallDetails, "risk" | "riskAction"> = {};
+    const exit = yield* Effect.exit(
+      work.pipe(
+        Effect.provideService(ToolCallRiskObserved, ({ tier, action }) => {
+          risk.risk = tier;
+          risk.riskAction = action;
+        }),
+      ),
+    );
     const ending = Exit.isSuccess(exit) ? resumedEnding(exit.value) : undefined;
     let reference: ToolCallId | undefined;
     if (ending !== undefined) {
-      const update = updateResumed(requestId, ending, startedAt);
+      const update = updateResumed(requestId, ending, startedAt, risk);
       // A second attempt in the background, for an update that failed.
       const retried = detached(update.pipe(reported(backgroundWriteTimeout), Effect.asVoid));
       if (ending.status === "succeeded")

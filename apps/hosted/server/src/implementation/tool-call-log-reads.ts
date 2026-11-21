@@ -4,7 +4,15 @@
  * names another member, another member's reference, run, session or agent finds nothing, exactly
  * as for an ID that does not exist. A reference from another organization is likewise not found.
  */
-import { type App, AppId, Cursor, RequestInvalid, StorageError } from "@executor-js/sdk/core";
+import {
+  type App,
+  AppId,
+  Cursor,
+  RequestInvalid,
+  // JHPATCH: calls carry the risk tier they were evaluated at.
+  RiskTier,
+  StorageError,
+} from "@executor-js/sdk/core";
 import { Clock, Effect, Option, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { SqlError, type Statement } from "effect/sql";
@@ -107,6 +115,9 @@ const readCursor = (cursor: Cursor) => {
     : Option.none();
 };
 
+// JHPATCH: risk tiers in order, for the "this tier and above" filter.
+const riskRanks: Record<RiskTier, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
 /** `ilike` text that matches `search` literally anywhere. */
 const containing = (search: string) => `%${search.replace(/[\\%_]/gu, (char) => `\\${char}`)}%`;
 
@@ -146,6 +157,11 @@ const CallRow = Schema.Struct({
   decided_member: Schema.Boolean,
   decided_ms: Millis,
   duration_ms: Schema.NullOr(Schema.Number),
+  // JHPATCH: the risk tier, what the policy did and the recorded arguments.
+  risk: Schema.NullOr(RiskTier),
+  risk_action: Schema.NullOr(Schema.Literals(["ask", "deny"])),
+  arguments: Schema.NullOr(Schema.fromJsonString(Schema.Json)),
+  arguments_truncated: Schema.NullOr(Schema.Boolean),
   accounts: Schema.fromJsonString(
     Schema.Array(Schema.Struct({ id: NullableString, name: NullableString })),
   ),
@@ -165,8 +181,16 @@ const decided = (row: CallRow): "pending" | "approved" | "denied" | "expired" =>
   }
 };
 
-/** A call as this viewer may read it; `usable` holds the apps whose names a member may be told. */
-const toCall = (row: CallRow, named: (app: AppId) => boolean): ToolCall => ({
+// JHPATCH: arguments are shown to owners, admins and the member who made the call.
+/**
+ * A call as this viewer may read it; `usable` holds the apps whose names a member may be told.
+ * `argumentsShown` says whether the viewer may read the call's arguments.
+ */
+const toCall = (
+  row: CallRow,
+  named: (app: AppId) => boolean,
+  argumentsShown: boolean,
+): ToolCall => ({
   id: row.id,
   startedAt: new Date(row.started_ms),
   // A call with neither a user nor a copied name was the app's own, not a deleted member's.
@@ -188,6 +212,14 @@ const toCall = (row: CallRow, named: (app: AppId) => boolean): ToolCall => ({
   app: { id: row.app_id, name: named(row.app_id) ? row.app_name : null },
   tool: row.tool,
   kind: row.kind,
+  // JHPATCH: the risk tier, what the policy did and the recorded arguments.
+  risk: row.risk,
+  riskAction: row.risk_action,
+  // A row whose arguments were kept says whether they were cut, even when nothing fit.
+  arguments:
+    !argumentsShown || row.arguments_truncated === null
+      ? null
+      : { value: row.arguments ?? null, truncated: row.arguments_truncated },
   accounts: row.accounts,
   status: row.status,
   errorType: row.error_type,
@@ -258,6 +290,12 @@ const listCalls = (query: ToolCallQuery) =>
     // Calls past the retention are gone, whether or not the prune has deleted them yet.
     const kept = new Date(now - retentionMillis).toISOString();
     const pattern = reference === null && search !== "" ? containing(search) : null;
+    // JHPATCH: risk filters to its tier and above; a call asked for approval when it saved a
+    // request, or was refused because its caller could not answer one.
+    const riskRank = query.risk === undefined ? null : riskRanks[query.risk];
+    const rank = sql`(case c.risk when 'low' then 0 when 'medium' then 1 when 'high' then 2
+      when 'critical' then 3 end)`;
+    const asked = sql`c.approval_id is not null or c.error_type = 'ToolApprovalRequired'`;
     const scope: Statement.Fragment = sql`c.organization_id = ${access.organization}
       and (${access.own}::text is null or c.user_id = ${access.own})
       and c.started_at >= ${kept}::timestamptz`;
@@ -286,6 +324,7 @@ const listCalls = (query: ToolCallQuery) =>
         ? sql`c.app_name ilike ${pattern}`
         : sql`(c.app_name ilike ${pattern}
             and c.app_id in (select jsonb_array_elements_text(${named}::jsonb)))`;
+    // JHPATCH: also filters by risk tier, kind and whether approval was asked.
     const matching: Statement.Fragment =
       reference !== null
         ? sql`${scope} and c.id = ${reference}`
@@ -301,6 +340,10 @@ const listCalls = (query: ToolCallQuery) =>
             or c.connection_id = ${query.connection ?? null})
           and (${query.session ?? null}::text is null or c.session_id = ${query.session ?? null})
           and (${query.run ?? null}::text is null or c.run_id = ${query.run ?? null})
+          and (${riskRank}::int is null or ${rank} >= ${riskRank}::int)
+          and (${query.kind ?? null}::text is null or c.kind = ${query.kind ?? null})
+          and (${query.approval ?? null}::text is null
+            or (${asked}) = (${query.approval ?? null}::text = 'requested'))
           and (${pattern}::text is null
             or c.tool ilike ${pattern} or ${appNamed}
             or c.user_name ilike ${pattern} or c.source_name ilike ${pattern}
@@ -311,6 +354,7 @@ const listCalls = (query: ToolCallQuery) =>
         ? sql`true`
         : sql`(c.started_at, c.id) < (${cursor.startedAt}::timestamptz, ${cursor.id})`;
     const read = Effect.gen(function* () {
+      // JHPATCH: also reads the risk tier, the policy's action and the kept arguments.
       const rows = yield* sql`select c.id,
           (extract(epoch from c.started_at) * 1000)::float8 as started_ms,
           to_char(c.started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as started_text,
@@ -332,7 +376,8 @@ const listCalls = (query: ToolCallQuery) =>
           (extract(epoch from coalesce(c.decided_at,
             case when ${status} = 'expired' then c.approval_expires_at end)) * 1000)::float8
             as decided_ms,
-          c.duration_ms,
+          c.duration_ms, c.risk, c.risk_action, c.arguments::text as arguments,
+          c.arguments_truncated,
           coalesce((select json_agg(json_build_object(
                 'id', case when ${shown} then a.account_id end,
                 'name', case when ${shown} then a.account_name end)
@@ -379,7 +424,8 @@ const listCalls = (query: ToolCallQuery) =>
     const runCalls = new Map(runs.map((run) => [run.id, run.calls]));
     return {
       items: page.map((row) => ({
-        ...toCall(row, told),
+        // JHPATCH: arguments are shown to owners, admins and the member who made the call.
+        ...toCall(row, told, !access.member || row.user_id === access.user),
         run: row.run_id === null ? null : { id: row.run_id, calls: runCalls.get(row.run_id) ?? 1 },
       })),
       ...(decoded.length > limit && last !== undefined

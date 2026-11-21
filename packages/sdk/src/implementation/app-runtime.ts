@@ -39,6 +39,8 @@ import {
   InvocationRun,
   IsolateTiming,
   RuntimeCallTimings,
+  // JHPATCH: reports the tier each reply carries.
+  RuntimeCallRisk,
   RuntimeProtocolFailed,
   type RuntimeCallTiming,
   type RuntimeProtocolUnsupported,
@@ -193,6 +195,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
             ...(input.approval === undefined ? {} : { approval: input.approval }),
             ...(input.replay === undefined ? {} : { replay: input.replay }),
             ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
+            // JHPATCH: the organization's risk policy, set only for builds that declare `riskPolicy`.
+            ...(input.risk === undefined ? {} : { risk: input.risk }),
             ...(run === undefined ? {} : { run }),
           };
           // Only the trusted runner or data supervisor calls the loader. The runner may sit behind
@@ -304,6 +308,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
           if (Result.isSuccess(collected) && collected.success.cacheChanged === true)
             yield* (yield* AppCacheChanges).changed(input.app);
           const reply = yield* Schema.decodeUnknownEffect(HostResponse)(body);
+          // JHPATCH: a refused call reports its tier too, such as one the risk policy blocked.
+          if (reply.risk !== undefined) (yield* RuntimeCallRisk)?.(reply.risk);
           // The app wrote these errors. Their text reaches the caller each is for; telemetry
           // records their names only.
           if (!reply.ok)

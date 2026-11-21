@@ -15,6 +15,7 @@
     "./tool-call-log": "./src/contracts/tool-call-log.ts",
     "./resource-access": "./src/contracts/resource-access.ts",
     "./oauth-clients": "./src/contracts/oauth-clients.ts",
+    "./risk-policy": "./src/contracts/risk-policy.ts",
     "./oauth-client-metadata": "./src/contracts/oauth-client-metadata.ts",
     "./database": "./src/implementation/database.ts",
     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",

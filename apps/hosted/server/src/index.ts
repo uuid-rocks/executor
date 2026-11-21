@@ -157,3 +157,5 @@ export * from "./contracts/schedules.ts";
 export { makeScheduledAuthority } from "./implementation/schedules.ts";
 export * from "./contracts/tool-call-log.ts";
 export { pruneToolCallLog, toolCallRetentionDays } from "./implementation/tool-call-log.ts";
+// JHPATCH: hosts supply the organization risk policy to every tool call.
+export { makeToolRiskPolicy } from "./implementation/tool-risk-policy.ts";

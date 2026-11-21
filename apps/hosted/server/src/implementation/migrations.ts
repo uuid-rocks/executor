@@ -16,6 +16,8 @@ import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
 import { migrateAppAccountLinks } from "./app-account-schema.ts";
 import { migrateToolCallLog } from "./tool-call-log.ts";
 import { migratePersonalAccounts } from "./personal-account-schema.ts";
+// JHPATCH: organization risk policies.
+import { migrateToolRisk } from "./risk-policy-schema.ts";
 
 /**
  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
@@ -129,6 +131,10 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   // Every shared account becomes one member's personal account; pending sign-ins for one are
   // refused. The running server reads personal accounts as this leaves them.
   "12_personal_accounts": migratePersonalAccounts,
+  // JHPATCH: organization risk policies.
+  // Additive: the risk policy tables and nullable risk and argument columns on the tool call log;
+  // the running server never reads them.
+  "13_tool_risk": migrateToolRisk,
 });
 
 /**

@@ -931,6 +931,8 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
     readOnly: readOnly(operation),
     // The app's `kinds`, or the HTTP method Executor sends.
     kindConfirmed: true,
+    // JHPATCH: a DELETE is hard to undo; other tiers default from the kind.
+    ...(!readOnly(operation) && operation.method === "DELETE" ? { risk: "high" as const } : {}),
     ...(operation.tags === undefined ? {} : { tags: operation.tags }),
   });
   const describe = (
@@ -963,6 +965,8 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
         const guarded = {
           description: tool.description,
           readOnly: tool.readOnly,
+          // JHPATCH: keep a DELETE's tier.
+          ...(tool.risk === undefined ? {} : { risk: tool.risk }),
           input: tool.input,
           run: (context: unknown, input: Schema.Json) =>
             tool

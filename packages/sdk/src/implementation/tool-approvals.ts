@@ -29,6 +29,8 @@ export const ApprovalPayload = Schema.Struct({
   invocation: ToolInvocation,
   originalInput: Json,
   issuer: Schema.optional(ToolApprovalIssuer),
+  // JHPATCH: asked by the organization's risk policy; automatic approval must not answer it.
+  policy: Schema.optional(Schema.Literal(true)),
 });
 const Record = Schema.Struct({
   id: ApprovalRequestId,
@@ -97,6 +99,8 @@ export function makeToolApprovals(
           invocation: payload.invocation,
           expiresAt: row.expiresAt.getTime(),
           ...(payload.issuer === undefined ? {} : { issuer: payload.issuer }),
+          // JHPATCH: hosts read it to keep automatic approval off policy-required requests.
+          ...(payload.policy === true ? { policy: true as const } : {}),
         };
       }),
     /**
@@ -107,6 +111,8 @@ export function makeToolApprovals(
       invocation: ToolInvocation,
       originalInput: Json,
       issuer: ToolApprovalIssuer | undefined,
+      // JHPATCH: the organization's risk policy, not only the app, asked for this approval.
+      policy?: true,
     ) =>
       Effect.gen(function* () {
         yield* prune(invocation.owner);
@@ -119,6 +125,8 @@ export function makeToolApprovals(
           invocation,
           originalInput,
           ...(issuer === undefined ? {} : { issuer }),
+          // JHPATCH: kept with the request so every later read knows a person must answer.
+          ...(policy === true ? { policy } : {}),
         }).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
           Effect.mapError(() => new StorageError()),
@@ -141,6 +149,8 @@ export function makeToolApprovals(
           invocation,
           elicitation: approvalElicitation(invocation.tool, invocation.input),
           expiresAt: expiresAt.getTime(),
+          // JHPATCH: callers with automatic approval offer it to a person instead.
+          ...(policy === true ? { policy } : {}),
         };
       }),
     resume: (

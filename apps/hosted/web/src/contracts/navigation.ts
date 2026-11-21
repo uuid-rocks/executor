@@ -149,6 +149,8 @@ export function hostedPageTitle(
   if (page === "approvals") return item ? "Review request" : "Approvals";
   if (page === "groups") return item ? "Group" : "Groups";
   if (page === "activity") return "Activity";
+  // JHPATCH: risk policy page
+  if (page === "risk-policy") return "Risk policy";
   if (page === "connect") return item ? "Connection" : "Connections";
   if (page === "webhooks") return "Webhook setup";
   if (page === "connections") return "Connect account";

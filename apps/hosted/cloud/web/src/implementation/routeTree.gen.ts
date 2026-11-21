@@ -32,6 +32,7 @@ import { Route as OrgOrganizationSlugApiKeysRouteImport } from './routes/org.$or
 import { Route as OrgOrganizationSlugBillingRouteImport } from './routes/org.$organizationSlug.billing'
 import { Route as OrgOrganizationSlugConnectRouteImport } from './routes/org.$organizationSlug.connect'
 import { Route as OrgOrganizationSlugOrganizationRouteImport } from './routes/org.$organizationSlug.organization'
+import { Route as OrgOrganizationSlugRiskPolicyRouteImport } from './routes/org.$organizationSlug.risk-policy'
 import { Route as OrgOrganizationSlugSetupRouteImport } from './routes/org.$organizationSlug_.setup'
 import { Route as OrgOrganizationSlugAccountsIndexRouteImport } from './routes/org.$organizationSlug.accounts.index'
 import { Route as OrgOrganizationSlugApprovalsIndexRouteImport } from './routes/org.$organizationSlug.approvals.index'
@@ -170,6 +171,12 @@ const OrgOrganizationSlugOrganizationRoute =
     path: '/organization',
     getParentRoute: () => OrgOrganizationSlugRoute,
   } as any)
+const OrgOrganizationSlugRiskPolicyRoute =
+  OrgOrganizationSlugRiskPolicyRouteImport.update({
+    id: '/risk-policy',
+    path: '/risk-policy',
+    getParentRoute: () => OrgOrganizationSlugRoute,
+  } as any)
 const OrgOrganizationSlugSetupRoute =
   OrgOrganizationSlugSetupRouteImport.update({
     id: '/org/$organizationSlug_/setup',
@@ -290,6 +297,7 @@ export interface FileRoutesByFullPath {
   '/org/$organizationSlug/billing': typeof OrgOrganizationSlugBillingRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
   '/org/$organizationSlug/organization': typeof OrgOrganizationSlugOrganizationRoute
+  '/org/$organizationSlug/risk-policy': typeof OrgOrganizationSlugRiskPolicyRoute
   '/org/$organizationSlug/setup': typeof OrgOrganizationSlugSetupRouteWithChildren
   '/org/$organizationSlug/': typeof OrgOrganizationSlugIndexRoute
   '/org/$organizationSlug/approvals/$runId': typeof OrgOrganizationSlugApprovalsRunIdRoute
@@ -329,6 +337,7 @@ export interface FileRoutesByTo {
   '/org/$organizationSlug/billing': typeof OrgOrganizationSlugBillingRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
   '/org/$organizationSlug/organization': typeof OrgOrganizationSlugOrganizationRoute
+  '/org/$organizationSlug/risk-policy': typeof OrgOrganizationSlugRiskPolicyRoute
   '/org/$organizationSlug': typeof OrgOrganizationSlugIndexRoute
   '/org/$organizationSlug/approvals/$runId': typeof OrgOrganizationSlugApprovalsRunIdRoute
   '/org/$organizationSlug/apps/$appId': typeof OrgOrganizationSlugAppsAppIdRoute
@@ -370,6 +379,7 @@ export interface FileRoutesById {
   '/org/$organizationSlug/billing': typeof OrgOrganizationSlugBillingRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
   '/org/$organizationSlug/organization': typeof OrgOrganizationSlugOrganizationRoute
+  '/org/$organizationSlug/risk-policy': typeof OrgOrganizationSlugRiskPolicyRoute
   '/org/$organizationSlug_/setup': typeof OrgOrganizationSlugSetupRouteWithChildren
   '/org/$organizationSlug/': typeof OrgOrganizationSlugIndexRoute
   '/org/$organizationSlug/approvals/$runId': typeof OrgOrganizationSlugApprovalsRunIdRoute
@@ -413,6 +423,7 @@ export interface FileRouteTypes {
     | '/org/$organizationSlug/billing'
     | '/org/$organizationSlug/connect'
     | '/org/$organizationSlug/organization'
+    | '/org/$organizationSlug/risk-policy'
     | '/org/$organizationSlug/setup'
     | '/org/$organizationSlug/'
     | '/org/$organizationSlug/approvals/$runId'
@@ -452,6 +463,7 @@ export interface FileRouteTypes {
     | '/org/$organizationSlug/billing'
     | '/org/$organizationSlug/connect'
     | '/org/$organizationSlug/organization'
+    | '/org/$organizationSlug/risk-policy'
     | '/org/$organizationSlug'
     | '/org/$organizationSlug/approvals/$runId'
     | '/org/$organizationSlug/apps/$appId'
@@ -492,6 +504,7 @@ export interface FileRouteTypes {
     | '/org/$organizationSlug/billing'
     | '/org/$organizationSlug/connect'
     | '/org/$organizationSlug/organization'
+    | '/org/$organizationSlug/risk-policy'
     | '/org/$organizationSlug_/setup'
     | '/org/$organizationSlug/'
     | '/org/$organizationSlug/approvals/$runId'
@@ -691,6 +704,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OrgOrganizationSlugOrganizationRouteImport
       parentRoute: typeof OrgOrganizationSlugRoute
     }
+    '/org/$organizationSlug/risk-policy': {
+      id: '/org/$organizationSlug/risk-policy'
+      path: '/risk-policy'
+      fullPath: '/org/$organizationSlug/risk-policy'
+      preLoaderRoute: typeof OrgOrganizationSlugRiskPolicyRouteImport
+      parentRoute: typeof OrgOrganizationSlugRoute
+    }
     '/org/$organizationSlug_/setup': {
       id: '/org/$organizationSlug_/setup'
       path: '/org/$organizationSlug/setup'
@@ -829,6 +849,7 @@ interface OrgOrganizationSlugRouteChildren {
   OrgOrganizationSlugBillingRoute: typeof OrgOrganizationSlugBillingRoute
   OrgOrganizationSlugConnectRoute: typeof OrgOrganizationSlugConnectRoute
   OrgOrganizationSlugOrganizationRoute: typeof OrgOrganizationSlugOrganizationRoute
+  OrgOrganizationSlugRiskPolicyRoute: typeof OrgOrganizationSlugRiskPolicyRoute
   OrgOrganizationSlugIndexRoute: typeof OrgOrganizationSlugIndexRoute
   OrgOrganizationSlugApprovalsRunIdRoute: typeof OrgOrganizationSlugApprovalsRunIdRoute
   OrgOrganizationSlugAppsAppIdRoute: typeof OrgOrganizationSlugAppsAppIdRoute
@@ -850,6 +871,7 @@ const OrgOrganizationSlugRouteChildren: OrgOrganizationSlugRouteChildren = {
   OrgOrganizationSlugBillingRoute: OrgOrganizationSlugBillingRoute,
   OrgOrganizationSlugConnectRoute: OrgOrganizationSlugConnectRoute,
   OrgOrganizationSlugOrganizationRoute: OrgOrganizationSlugOrganizationRoute,
+  OrgOrganizationSlugRiskPolicyRoute: OrgOrganizationSlugRiskPolicyRoute,
   OrgOrganizationSlugIndexRoute: OrgOrganizationSlugIndexRoute,
   OrgOrganizationSlugApprovalsRunIdRoute:
     OrgOrganizationSlugApprovalsRunIdRoute,

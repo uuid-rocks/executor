@@ -23,6 +23,8 @@ import {
   type DurableDeclarations,
   type Executor,
   type RepositoryBackend,
+  // JHPATCH: every tool call reads the organization's risk policy.
+  ToolRiskPolicy,
 } from "@executor-js/sdk/core";
 import {
   HostedBackground,
@@ -46,6 +48,8 @@ import {
   executorDefaultRedeployed,
   hostedAppCopies,
   pruneToolCallLog,
+  // JHPATCH: every tool call reads the organization's risk policy.
+  makeToolRiskPolicy,
 } from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
@@ -231,16 +235,21 @@ export const selfHostExecutorServices = <E, R>(
       // and schedule wake.
       const hosted = withDeploySetupWake(withExecutorAnalytics(executor));
       const groupDatabase = yield* SqlClient.SqlClient;
+      // JHPATCH: requests, MCP, schedules and app workflow callbacks all run with this, so every
+      // tool call they make reads the policy; the workflow handler keeps the context it is built in.
+      const riskPolicy = makeToolRiskPolicy(Effect.succeed(groupDatabase));
       const workflowRequests = yield* workerdHostHandler({
         executor: Effect.succeed(executor),
         blobs,
-      });
+      }).pipe(Effect.provideService(ToolRiskPolicy, riskPolicy));
       return Layer.mergeAll(
         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
         Layer.succeed(SelfHostRegistry, readRegistry),
         Layer.succeed(SelfHostAuth, auth),
         Layer.succeed(ScheduledAuthority, scheduleAuthority),
         Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
+        // JHPATCH: the organization's risk policy for every tool call.
+        Layer.succeed(ToolRiskPolicy, riskPolicy),
         Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),
         // Self-host serves Git, like everything else, on its one origin.
         Layer.succeed(AppGitOrigins, () => [new URL(origin).origin]),

@@ -28,6 +28,10 @@ export const SecurityAuditAction = Schema.Literals([
   "organization.delete",
   "user.delete",
   "credential.read",
+  // JHPATCH: organization risk policy changes.
+  "risk_policy.update",
+  "risk_policy.override_set",
+  "risk_policy.override_remove",
 ]);
 export type SecurityAuditAction = typeof SecurityAuditAction.Type;
 

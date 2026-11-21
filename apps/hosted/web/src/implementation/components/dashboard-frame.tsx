@@ -6,6 +6,8 @@ import {
   FingerPrintIcon,
   Key01Icon,
   ConnectIcon,
+  // JHPATCH: risk policy page
+  SecurityCheckIcon,
   Settings05Icon,
   Shield01Icon,
   UserCircleIcon,
@@ -27,6 +29,8 @@ const items = [
   { to: "/org/$organizationSlug/approvals", label: "Approvals", icon: Shield01Icon },
   { to: "/org/$organizationSlug/groups", label: "Groups", icon: UserGroupIcon },
   { to: "/org/$organizationSlug/activity", label: "Activity", icon: Activity01Icon },
+  // JHPATCH: risk policy page
+  { to: "/org/$organizationSlug/risk-policy", label: "Risk policy", icon: SecurityCheckIcon },
 ] as const;
 const settings = {
   to: "/org/$organizationSlug/organization",

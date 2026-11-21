@@ -1,7 +1,7 @@
 import { EmptyState } from "./empty-state.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import { useState, type ReactNode } from "react";
-import type { Tool, ToolRouter, ToolSummary } from "@executor-js/sdk";
+import type { RiskTier, Tool, ToolRouter, ToolSummary } from "@executor-js/sdk";
 import { Option } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -629,6 +629,20 @@ const effects: Record<Effect, { readonly label?: string; readonly badge?: string
   unknown: {},
 };
 
+// JHPATCH: risk tier badges; high and critical stand out.
+const riskLabels: Record<RiskTier, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  critical: "Critical",
+};
+const riskBadges: Record<RiskTier, string> = {
+  low: "bg-muted text-muted-foreground",
+  medium: "bg-muted text-foreground",
+  high: "bg-orange-500/10 text-orange-700 dark:text-orange-300",
+  critical: "bg-red-500/15 text-red-700 dark:text-red-300",
+};
+
 /** A description that only repeats the title adds nothing. */
 const sameText = (a: string, b: string) =>
   a
@@ -662,6 +676,17 @@ function ToolHeading({
           {effect.label !== undefined && (
             <span className={cn("rounded-md px-1.5 py-0.5 text-[11px] font-medium", effect.badge)}>
               {effect.label}
+            </span>
+          )}
+          {/* JHPATCH: the tier the organization's risk policy acts on. */}
+          {(tool.risk !== undefined || tool.riskComputed === true) && (
+            <span
+              className={cn(
+                "rounded-md px-1.5 py-0.5 text-[11px] font-medium",
+                tool.risk === undefined ? "bg-muted text-muted-foreground" : riskBadges[tool.risk],
+              )}
+            >
+              {tool.risk === undefined ? "Risk depends on input" : `Risk: ${riskLabels[tool.risk]}`}
             </span>
           )}
         </div>

@@ -49,6 +49,9 @@ import {
   type ResolvedAccountSlots,
   HostError,
   TrustedToolApproval,
+  InvocationRisk,
+  RiskTier,
+  defaultRiskTier,
   type AppHandler,
   type HostContext,
 } from "../contracts/host.ts";
@@ -239,6 +242,8 @@ function requirements(
         skillSources: true,
         scheduledTools: true,
         sharedDefinitions: true,
+        // JHPATCH: this build evaluates risk tiers and enforces the invocation's risk policy.
+        riskPolicy: true,
       },
       ...(sql ? { sql: true } : {}),
       ...(events === undefined || Object.keys(events).length === 0
@@ -427,6 +432,9 @@ function dispatch(
   signal: AbortSignal,
   /** Events this invocation emits. The handler sends them only when it succeeds. */
   emitted: EmittedEvent[],
+  // JHPATCH: the handler reports the tier a call was evaluated at in its reply.
+  /** Told the risk tier a tool call is evaluated at, once it is known. */
+  evaluatedRisk: (tier: RiskTier) => void,
 ): Effect.Effect<JsonValue, HostError> {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -861,6 +869,50 @@ function dispatch(
             : Effect.fail(inputInvalid(Cause.squash(cause), request.input)),
         ),
       );
+      // JHPATCH: the organization's risk policy: an override or the tool's tier picks the action.
+      const policy =
+        context.risk === undefined
+          ? undefined
+          : yield* safe(
+              () => Schema.decodeUnknownEffect(InvocationRisk)(context.risk),
+              new HostInputInvalid(),
+            );
+      // Data calls from the app's own UI carry no policy and are not tool calls, so they skip it.
+      const declaredRisk = tool.risk;
+      const tier =
+        policy === undefined && request.operation !== "call"
+          ? undefined
+          : (policy?.tier ??
+            (yield* safe(
+              () =>
+                (typeof declaredRisk === "function"
+                  ? declaredRisk({ toolName, toolInput: input, signal: invocationSignal }).pipe(
+                      Effect.withSpan("app.tool.risk", {
+                        attributes: { "executor.tool.name": toolName },
+                      }),
+                    )
+                  : Effect.succeed(
+                      declaredRisk ?? defaultRiskTier(tool.kind === "query", tool.annotations),
+                    )
+                ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RiskTier))),
+              new HostToolPolicyFailed(),
+            )));
+      if (tier !== undefined) evaluatedRisk(tier);
+      const action = tier === undefined ? "app" : (policy?.actions[tier] ?? "app");
+      // A deny holds even for a call a person already approved.
+      if (action === "deny") return yield* new HostToolBlocked({ policy: true });
+      const approvalRequired = (policyRequired: boolean) =>
+        safe(() => Schema.decodeUnknownEffect(JsonValue)(input), new HostInputInvalid()).pipe(
+          Effect.flatMap((input) =>
+            Effect.fail(
+              new HostToolApprovalRequired({
+                input,
+                elicitation: approvalElicitation(toolName, input),
+                ...(policyRequired ? { policy: true as const } : {}),
+              }),
+            ),
+          ),
+        );
       if (context.approval !== undefined) {
         const approved = yield* safe(
           () => Schema.decodeUnknownEffect(TrustedToolApproval)(context.approval),
@@ -876,33 +928,26 @@ function dispatch(
         ) {
           return yield* new HostInputInvalid();
         }
-      } else if (tool.approval !== undefined) {
+      } else {
+        // JHPATCH: the policy's `ask` needs a person even when the app's approval would not.
         const approval = tool.approval;
-        const decision = yield* safe(
-          () =>
-            approval({ toolName, toolInput: input, signal: invocationSignal }).pipe(
-              Effect.withSpan("app.tool.approval", {
-                attributes: { "executor.tool.name": toolName },
-              }),
-              Effect.flatMap(Schema.decodeUnknownEffect(ApprovalDecision)),
-            ),
-          new HostToolPolicyFailed(),
-        );
+        const decision =
+          approval === undefined
+            ? "approved"
+            : yield* safe(
+                () =>
+                  approval({ toolName, toolInput: input, signal: invocationSignal }).pipe(
+                    Effect.withSpan("app.tool.approval", {
+                      attributes: { "executor.tool.name": toolName },
+                    }),
+                    Effect.flatMap(Schema.decodeUnknownEffect(ApprovalDecision)),
+                  ),
+                new HostToolPolicyFailed(),
+              );
         yield* Match.value(decision).pipe(
-          Match.when("approved", () => Effect.void),
+          Match.when("approved", () => (action === "ask" ? approvalRequired(true) : Effect.void)),
           Match.when("denied", () => Effect.fail(new HostToolBlocked())),
-          Match.when("user-approval", () =>
-            safe(() => Schema.decodeUnknownEffect(JsonValue)(input), new HostInputInvalid()).pipe(
-              Effect.flatMap((input) =>
-                Effect.fail(
-                  new HostToolApprovalRequired({
-                    input,
-                    elicitation: approvalElicitation(toolName, input),
-                  }),
-                ),
-              ),
-            ),
-          ),
+          Match.when("user-approval", () => approvalRequired(action === "ask")),
           Match.exhaustive,
         );
       }
@@ -1114,8 +1159,10 @@ const errorStatus = Match.type<HostError>().pipe(
 /** Construct a lazy native handler; requirements never evaluate the app factory. */
 export const createAppHandler =
   (app: unknown): AppHandler =>
-  (request, context) =>
-    Effect.gen(function* () {
+  (request, context) => {
+    // JHPATCH: set once a tool call's risk tier is known; see `dispatch`.
+    let risk: RiskTier | undefined;
+    return Effect.gen(function* () {
       if (request.method !== "POST") return yield* Effect.fail(new HostRequestInvalid());
       // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's Request
       const input = yield* Effect.tryPromise({
@@ -1131,7 +1178,10 @@ export const createAppHandler =
       });
       let toolError = false;
       const emitted: EmittedEvent[] = [];
-      const value = yield* dispatch(app, command, context, request.signal, emitted).pipe(
+      // JHPATCH: the reply, success or failure, carries the tier the call was evaluated at.
+      const value = yield* dispatch(app, command, context, request.signal, emitted, (tier) => {
+        risk = tier;
+      }).pipe(
         Effect.provideService(ToolResultObservation, {
           failed: () => {
             toolError = true;
@@ -1169,12 +1219,18 @@ export const createAppHandler =
         value,
         ...(toolError ? { toolError: true } : {}),
         ...(emitted.length === 0 ? {} : { events: emitted }),
+        // JHPATCH: the tier the call was evaluated at.
+        ...(risk === undefined ? {} : { risk }),
       });
     }).pipe(
       Effect.catch((error) =>
         Schema.encodeEffect(HostError)(error).pipe(
           Effect.map((encoded) =>
-            Response.json({ ok: false, error: encoded }, { status: errorStatus(error) }),
+            Response.json(
+              // JHPATCH: a refused call reports its tier too.
+              { ok: false, error: encoded, ...(risk === undefined ? {} : { risk }) },
+              { status: errorStatus(error) },
+            ),
           ),
           Effect.orDie,
         ),
@@ -1198,3 +1254,4 @@ export const createAppHandler =
             ),
       ),
     );
+  };

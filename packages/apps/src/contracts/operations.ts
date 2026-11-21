@@ -1,6 +1,6 @@
 /** Native operation declarations. SQL access is an optional invocation capability. */
 import type { Effect, Schema } from "effect";
-import type { Approval } from "./approval.ts";
+import type { Approval, Risk } from "./approval.ts";
 import type { EvaluationContext, ScopedSlots } from "./app.ts";
 import type { Sql, SqlReader } from "./sql.ts";
 import type { ToolAnnotations } from "./tools.ts";
@@ -29,5 +29,7 @@ export interface AppOperation<Input = unknown, Output = unknown> {
    */
   readonly outputSchema?: JsonObject;
   readonly approval?: Approval<Input>;
+  // JHPATCH: the tool's risk tier; without one, hosts derive it from the kind and hints.
+  readonly risk?: Risk<Input>;
   readonly run: (context: OperationContext, input: Input) => Effect.Effect<Output, unknown>;
 }
