@@ -1,0 +1,92 @@
+# JHPATCH: the public export ships no workflows; the fork's CI runs on Blacksmith runners.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [v2]
+  workflow_dispatch:
+    inputs:
+      specs:
+        description: "Spec files from e2e/tests to run (space separated), or `all: <reason>`"
+        required: false
+        default: ""
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: bun run check
+      - run: bun run apps:protocols
+
+  select:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    outputs:
+      self-host: ${{ steps.select.outputs.self-host }}
+      cloud: ${{ steps.select.outputs.cloud }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - id: select
+        env:
+          E2E_BODY: ${{ github.event.pull_request.body }}
+          E2E_SPECS: ${{ github.event_name == 'workflow_dispatch' && inputs.specs || (github.event_name == 'push' && 'none' || '') }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE" ]; then E2E_CHANGED="$(git diff --name-only "$BASE"...HEAD)"; export E2E_CHANGED; fi
+          node scripts/fork-ci-select.ts | tee -a "$GITHUB_OUTPUT"
+
+  e2e:
+    needs: select
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [self-host, cloud]
+    runs-on: ${{ matrix.target == 'cloud' && 'blacksmith-8vcpu-ubuntu-2404' || 'blacksmith-16vcpu-ubuntu-2404' }}
+    timeout-minutes: 45
+    steps:
+      - id: pattern
+        env:
+          PATTERN: ${{ matrix.target == 'cloud' && needs.select.outputs.cloud || needs.select.outputs.self-host }}
+        run: |
+          if [ -z "$PATTERN" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; echo "Nothing selected for ${{ matrix.target }}."; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.pattern.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.pattern.outputs.run == 'true'
+        uses: ./.github/actions/setup
+      - if: steps.pattern.outputs.run == 'true'
+        name: Install E2E tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg xvfb
+          bunx playwright install --with-deps chromium webkit
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' packages/telemetry/collector/rust-toolchain.toml)" --profile minimal
+      - if: steps.pattern.outputs.run == 'true'
+        run: bun run e2e:prepare
+      - if: steps.pattern.outputs.run == 'true'
+        env:
+          PATTERN: ${{ matrix.target == 'cloud' && needs.select.outputs.cloud || needs.select.outputs.self-host }}
+        run: xvfb-run -a bun run e2e:${{ matrix.target }} --test-name "$PATTERN"
+      - if: failure() && steps.pattern.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.target }}-evidence-attempt-${{ github.run_attempt }}
+          path: |
+            .local/e2e/*/*/report
+            .local/e2e/*/*/logs
+          if-no-files-found: ignore
+          retention-days: 7
