@@ -38,6 +38,8 @@ import {
   recordCallDetails,
 } from "./tool-call-log.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
+// JHPATCH: the call's risk policy comes from its access check's statement.
+import { RiskPolicyReadAhead } from "./tool-risk-policy.ts";
 import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import {
@@ -172,14 +174,17 @@ const startTool = (
   Effect.flatMap(currentOwner, (owner) =>
     Effect.gen(function* () {
       const executor = yield* Effect.flatten(HostedExecutor);
-      const { version, accounts, kind } = yield* checkedToolCall(
+      // JHPATCH: the check also read the call's risk policy, so the call makes no read of its own.
+      const { version, accounts, kind, risk } = yield* checkedToolCall(
         executor,
         owner,
         input,
         (selected, described) => authorizeTool({ ...input, ...selected }, described),
       );
       yield* recordCallDetails({ version, accounts, ...(kind === undefined ? {} : { kind }) });
-      return yield* executor.tools.call({ ...input, version, accounts, kind }, options);
+      return yield* executor.tools
+        .call({ ...input, version, accounts, kind }, options)
+        .pipe(Effect.provideService(RiskPolicyReadAhead, risk));
     }),
   );
 /**

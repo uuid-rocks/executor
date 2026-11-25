@@ -50,6 +50,7 @@ try {
     ],
     consumer,
   );
+  // JHPATCH: a tool call's reply names the risk tier it was evaluated at.
   const example = `import assert from "node:assert/strict";
 import { defineApp, object, query, router, string } from "apps";
 import { createAppHandler, hostContext } from "apps/host";
@@ -58,7 +59,7 @@ const app = defineApp({}, { tools: router({ greet }) });
 const handler = createAppHandler(app);
 const response = await handler(new Request("https://fixture.test", { method: "POST", body: JSON.stringify({ operation: "call", tool: "greet", kind: "query", input: { name: "Ada" } }) }), hostContext({ app: {}, user: {} }));
 assert.equal(response.status, 200);
-assert.deepEqual(await response.json(), { ok: true, value: { message: "Hello Ada" } });
+assert.deepEqual(await response.json(), { ok: true, value: { message: "Hello Ada" }, risk: "low" });
 `;
   await writeFile(join(consumer, "example.mjs"), example);
   run("node", ["example.mjs"], consumer);

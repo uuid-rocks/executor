@@ -31,6 +31,9 @@ import {
   HostedTool,
   HostedToolSummary,
   type ElicitationHandler,
+  // JHPATCH: risk tiers and the organization's risk policy.
+  RiskAction,
+  RiskTier,
 } from "apps/contracts";
 import { StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
 import { hostApiChangingCode } from "./host-api.ts";
@@ -149,6 +152,32 @@ export const ToolCallKindObserved = Context.Reference<((kind: ToolKind) => void)
   "executor/ToolCallKindObserved",
   { defaultValue: () => undefined },
 );
+// JHPATCH: organizations set what each risk tier does; the host supplies it for every call.
+export { RiskAction, RiskTier };
+/** A tier as copy names it, such as “high-risk”. */
+const riskName = (risk: RiskTier | undefined) => (risk === undefined ? "these" : `${risk}-risk`);
+/** What an organization's risk policy does with each tier. */
+export type RiskActions = Readonly<Record<RiskTier, RiskAction>>;
+/**
+ * Host-only: the risk policy for one call's owner, app and tool. `tier` is an administrator's
+ * override of the tier the app declares. `tools.call` and `tools.resume` read it for every call;
+ * undefined means no policy. Never supplied by authored code.
+ */
+export const ToolRiskPolicy = Context.Reference<
+  | ((target: {
+      readonly owner: OwnerId;
+      readonly app: AppId;
+      readonly tool: ToolName;
+    }) => Effect.Effect<{ readonly actions: RiskActions; readonly tier?: RiskTier }, StorageError>)
+  | undefined
+>("executor/ToolRiskPolicy", { defaultValue: () => undefined });
+/**
+ * Host-only: told the tier a call was evaluated at and what the policy did with it, once the tier
+ * is known. A call that fails before then reports none. Never supplied by authored code.
+ */
+export const ToolCallRiskObserved = Context.Reference<
+  ((observed: { readonly tier: RiskTier; readonly action: RiskAction }) => void) | undefined
+>("executor/ToolCallRiskObserved", { defaultValue: () => undefined });
 /**
  * Host-only: the reads `tools.call` would make for a selection, made by the host beside its own
  * checks in one batch (see {@link PrefetchHost}). `value` is opaque to the host. `tools.call` uses
@@ -1924,39 +1953,108 @@ export const operationMcpFailure = (
  * The tool's approval policy denied the call. The decision and the report of it come from the
  * app's code, so the copy says whose decision it was without claiming what the app did.
  */
+// JHPATCH: an organization's risk policy also blocks calls; its copy names the policy and tier.
 export const ToolBlocked = UserFacingError.define({
   tag: "ToolBlocked",
   status: 403,
-  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
-  presentation: callPresentation(({ tool }) => ({
-    title: "Blocked by the app’s approval policy",
-    description: `The approval policy in the app’s code denied this call to “${tool}”.`,
-    recovery: {
-      action:
-        "Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
-      instructions: `The approval policy that “${tool}” declares in the app’s code returned \`denied\` for this call. Do not retry the call unchanged. Tell the user which tool was blocked. Read the policy to see what it checks: its input, the app’s configuration, or the user’s access. If the call should be allowed and a requirement is unmet, meet it (for example, ask the user to enable the setting or grant the access) and call the tool again. Change the app’s source only when the policy itself is wrong and the user agrees: find the tool’s \`approval\` option, or the \`withApprovals\` policy over its router, return \`user-approval\` to ask the user or \`approved\` to run it, then deploy. Otherwise reach the goal with a different tool.`,
-    },
-  })),
-  recorded: () => "The tool's approval policy blocked this call.",
+  fields: {
+    app: AppId,
+    version: VersionId,
+    tool: ToolName,
+    mayHaveWritten: MayHaveWritten,
+    /** The organization's risk policy blocked the call, not the app. */
+    policy: Schema.optional(Schema.Literal(true)),
+    /** The tier the policy blocked. */
+    risk: Schema.optional(RiskTier),
+    /**
+     * The policy requires approval, which the app's build cannot ask for: it was built with an
+     * `apps` release from before risk policies.
+     */
+    redeploy: Schema.optional(Schema.Literal(true)),
+  },
+  presentation: callPresentation(({ tool, policy, risk, redeploy }) =>
+    policy !== true
+      ? {
+          title: "Blocked by the app’s approval policy",
+          description: `The approval policy in the app’s code denied this call to “${tool}”.`,
+          recovery: {
+            action:
+              "Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
+            instructions: `The approval policy that “${tool}” declares in the app’s code returned \`denied\` for this call. Do not retry the call unchanged. Tell the user which tool was blocked. Read the policy to see what it checks: its input, the app’s configuration, or the user’s access. If the call should be allowed and a requirement is unmet, meet it (for example, ask the user to enable the setting or grant the access) and call the tool again. Change the app’s source only when the policy itself is wrong and the user agrees: find the tool’s \`approval\` option, or the \`withApprovals\` policy over its router, return \`user-approval\` to ask the user or \`approved\` to run it, then deploy. Otherwise reach the goal with a different tool.`,
+          },
+        }
+      : redeploy === true
+        ? {
+            title: "Approval required by the organization’s risk policy",
+            description: `The organization’s risk policy requires a person to approve ${riskName(risk)} calls to “${tool}”, and the app’s current deployment cannot ask for approval.`,
+            recovery: {
+              action:
+                "Redeploy the app with a current apps release so the call can ask for approval, then call the tool again.",
+              instructions: `The app was built with an apps release from before risk policies, so Executor cannot pause this call for approval. Do not retry the call unchanged. Tell the user that “${tool}” needs approval under the organization’s risk policy. Redeploy the app (rebuild it with the current \`apps\` package) so the call can ask the user, then call it again. Otherwise reach the goal with a different tool.`,
+            },
+          }
+        : {
+            title: "Blocked by the organization’s risk policy",
+            description: `The organization’s risk policy blocks ${riskName(risk)} calls, so this call to “${tool}” did not run.`,
+            recovery: {
+              action:
+                "Use a different tool, or ask an organization owner or admin to change the risk policy or this tool’s tier.",
+              instructions: `Do not retry the call unchanged: the organization’s risk policy blocks every ${riskName(risk)} call. Tell the user which tool was blocked and why. Reach the goal with a lower-risk tool if one exists. Only an organization owner or admin can change the risk policy or override this tool’s tier.`,
+            },
+          },
+  ),
+  recorded: ({ policy, redeploy }) =>
+    policy !== true
+      ? "The tool's approval policy blocked this call."
+      : redeploy === true
+        ? "The organization's risk policy requires approval the app's build cannot ask for."
+        : "The organization's risk policy blocked this call.",
 });
 export type ToolBlocked = typeof ToolBlocked.Type;
 
-const toolApprovalRequired = ({ tool }: { readonly tool: ToolName }): RefusalCopy => ({
-  message: `“${tool}” needs approval before it runs, and this request cannot present an approval prompt.`,
-  title: "Approval required",
-  description: `“${tool}” needs approval, and this request cannot present an approval prompt.`,
-});
+// JHPATCH: a risk policy's approval names the policy and the tier it asked about.
+const toolApprovalRequired = ({
+  tool,
+  policy,
+  risk,
+}: {
+  readonly tool: ToolName;
+  readonly policy?: true | undefined;
+  readonly risk?: RiskTier | undefined;
+}): RefusalCopy =>
+  policy === true
+    ? {
+        message: `The organization’s risk policy requires approval for ${riskName(risk)} tools before “${tool}” runs, and this request cannot present an approval prompt.`,
+        title: "Approval required by the organization’s risk policy",
+        description: `The organization’s risk policy requires approval for ${riskName(risk)} tools, and this request cannot present an approval prompt.`,
+      }
+    : {
+        message: `“${tool}” needs approval before it runs, and this request cannot present an approval prompt.`,
+        title: "Approval required",
+        description: `“${tool}” needs approval, and this request cannot present an approval prompt.`,
+      };
 /**
  * Adapter diagnostic for callers that cannot yet present a pending SDK approval request
  * (`approvalRequired`). The app's code asked for the approval, so for a call that may write the
- * copy does not claim that the tool has not run.
+ * copy does not claim that the tool has not run. `policy` says the organization's risk policy
+ * asked, for the tier `risk`.
  */
 export const ToolApprovalRequired = ApiError.define({
   tag: "ToolApprovalRequired",
   status: 409,
-  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+  fields: {
+    app: AppId,
+    version: VersionId,
+    tool: ToolName,
+    mayHaveWritten: MayHaveWritten,
+    policy: Schema.optional(Schema.Literal(true)),
+    risk: Schema.optional(RiskTier),
+  },
   message: refusalMessage(toolApprovalRequired),
-  recorded: () => "The tool needs approval, and this request cannot present an approval prompt.",
+  recorded: ({ policy }: { readonly policy?: true | undefined }) =>
+    policy === true
+      ? "The organization's risk policy requires approval, and this request cannot present an approval prompt."
+      : "The tool needs approval, and this request cannot present an approval prompt.",
 });
 export type ToolApprovalRequired = typeof ToolApprovalRequired.Type;
 
@@ -2090,6 +2188,12 @@ export const ToolPending = Schema.Struct({
   invocation: ToolInvocation,
   elicitation: ApprovalElicitation,
   expiresAt: Schema.Number,
+  // JHPATCH: the organization's risk policy asked, so automatic approval modes must not answer.
+  /** The organization's risk policy requires a person to approve: automatic approval never does. */
+  policy: Schema.optionalKey(Schema.Literal(true)),
+  // JHPATCH: a caller that cannot ask names the tier the policy asked about.
+  /** With `policy`, the tier the policy asked about. */
+  risk: Schema.optionalKey(RiskTier),
 });
 /** Public outcome of an initial call. */
 export const ToolCallResult = Schema.Union([ToolCompleted, ToolPending]);
@@ -2100,12 +2204,18 @@ export type ToolCallResult = typeof ToolCallResult.Type;
  * code asked for the approval after it received the call, so a call that may write (not a query)
  * may already have made its change.
  */
-export const approvalRequired = ({ invocation }: Pick<typeof ToolPending.Type, "invocation">) =>
+// JHPATCH: a risk policy's approval names its tier.
+export const approvalRequired = ({
+  invocation,
+  policy,
+  risk,
+}: Pick<typeof ToolPending.Type, "invocation" | "policy" | "risk">) =>
   new ToolApprovalRequired({
     app: invocation.app,
     version: invocation.version,
     tool: invocation.tool,
     ...(invocation.kind === "query" ? {} : { mayHaveWritten: true as const }),
+    ...(policy === true ? { policy, ...(risk === undefined ? {} : { risk }) } : {}),
   });
 /** Every way a live call fails. A resumed call is the same call, so it fails the same ways. */
 const toolCallErrors = [
@@ -2195,6 +2305,8 @@ export const ToolApproval = Schema.Struct({
   invocation: ToolInvocation,
   expiresAt: Schema.Number,
   issuer: Schema.optional(ToolApprovalIssuer),
+  // JHPATCH: requests the organization's risk policy asked for; see `ToolPending.policy`.
+  policy: Schema.optional(Schema.Literal(true)),
 });
 export type ToolApproval = typeof ToolApproval.Type;
 /** Unknown request, a request outside an optional owner filter, or one issued to another flow. */

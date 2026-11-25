@@ -183,6 +183,8 @@ export const openapiToolsEffect = (
           const tool: OpenapiTools[string] = {
             description: op.description,
             readOnly: isOpenapiReadMethod(op.method),
+            // JHPATCH: a DELETE is hard to undo.
+            ...(op.method === "DELETE" ? { risk: "high" as const } : {}),
             input,
             run: (_context, value) =>
               Schema.decodeUnknownEffect(input)(

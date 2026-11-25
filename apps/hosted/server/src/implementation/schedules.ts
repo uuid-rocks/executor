@@ -40,6 +40,8 @@ import {
 import { callerAccounts } from "./app-accounts.ts";
 import { actorUsesApp } from "./resource-lifecycle.ts";
 import { policyDatabase } from "./resource-policy.ts";
+// JHPATCH: the tool call log names who answered a scheduled run's approval.
+import { recordScheduledAnswer } from "./tool-call-log.ts";
 
 /** Capture the actual host SQL client and policy while preserving per-run membership checks. */
 export const makeScheduledAuthority = (executor: Executor) =>
@@ -344,6 +346,8 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
           owner,
           action: response.action === "accept" ? "accept" : "decline",
         });
+        // JHPATCH: the run resumes later, without this person, so the log is told now.
+        if (pending.run.requestId !== null) yield* recordScheduledAnswer(pending.run.requestId);
         yield* wake;
         return { status: "answered" as const };
       }).pipe(

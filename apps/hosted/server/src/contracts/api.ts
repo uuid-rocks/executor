@@ -35,6 +35,8 @@ import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
 import { HostedFeedback } from "./feedback.ts";
 import { HostedToolCalls } from "./tool-call-log.ts";
+// JHPATCH: the organization risk policy API.
+import { HostedRiskPolicy } from "./risk-policy.ts";
 
 /** Process liveness only; this does not probe the app catalog or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
@@ -188,6 +190,8 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedMcpConnections,
     HostedFeedback,
     HostedToolCalls,
+    // JHPATCH: the organization risk policy API.
+    HostedRiskPolicy,
   )
   .add(
     HttpApiGroup.make("context").add(

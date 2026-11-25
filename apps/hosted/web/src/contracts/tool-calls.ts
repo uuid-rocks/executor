@@ -5,7 +5,8 @@
  */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
-import { AppId, type Cursor } from "@executor-js/sdk";
+// JHPATCH: risk, kind and approval filters
+import { AppId, RiskTier, ToolKind, type Cursor } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import {
   ToolCallId,
@@ -40,7 +41,17 @@ export type ToolCallSearch = {
   readonly session?: string | undefined;
   /** The `execute` program or `call` batch that made the calls. */
   readonly run?: string | undefined;
+  // JHPATCH: risk, kind and approval filters
+  /** This risk tier and above. */
+  readonly risk?: RiskTier | undefined;
+  readonly kind?: ToolKind | undefined;
+  /** Calls that asked for approval, or calls that did not. */
+  readonly approval?: ToolCallApprovalFilter | undefined;
 };
+
+// JHPATCH: risk, kind and approval filters
+const ToolCallApprovalFilter = Schema.Literals(["requested", "none"]);
+type ToolCallApprovalFilter = typeof ToolCallApprovalFilter.Type;
 
 const Text = Schema.NonEmptyString.check(Schema.isMaxLength(256));
 const SearchText = Schema.NonEmptyString.check(Schema.isMaxLength(200));
@@ -59,6 +70,10 @@ export function parseToolCallSearch(search: Record<string, unknown>): ToolCallSe
     connection: optional(Text, search.connection),
     session: optional(Text, search.session),
     run: optional(Text, search.run),
+    // JHPATCH: risk, kind and approval filters
+    risk: optional(RiskTier, search.risk),
+    kind: optional(ToolKind, search.kind),
+    approval: optional(ToolCallApprovalFilter, search.approval),
   };
 }
 
@@ -67,12 +82,28 @@ export const searchedReference = (search: ToolCallSearch): ToolCallId | undefine
   optional(ToolCallId, search.q?.trim());
 
 /** What the list can be narrowed by, besides its search text and time range. */
-const filterNames = ["member", "app", "status", "agent", "connection", "session", "run"] as const;
+// JHPATCH: risk, kind and approval filters
+const filterNames = [
+  "member",
+  "app",
+  "status",
+  "risk",
+  "kind",
+  "approval",
+  "agent",
+  "connection",
+  "session",
+  "run",
+] as const;
 export type FilterName = (typeof filterNames)[number];
 export const noFilters: Pick<ToolCallSearch, FilterName> = {
   member: undefined,
   app: undefined,
   status: undefined,
+  // JHPATCH: risk, kind and approval filters
+  risk: undefined,
+  kind: undefined,
+  approval: undefined,
   agent: undefined,
   connection: undefined,
   session: undefined,
@@ -92,6 +123,10 @@ export class ToolCallPageKey extends Data.Class<{
   readonly member: string | undefined;
   readonly app: AppId | undefined;
   readonly status: ToolCallStatus | undefined;
+  // JHPATCH: risk, kind and approval filters
+  readonly risk: RiskTier | undefined;
+  readonly kind: ToolKind | undefined;
+  readonly approval: ToolCallApprovalFilter | undefined;
   readonly agent: string | undefined;
   readonly connection: string | undefined;
   readonly session: string | undefined;
@@ -119,6 +154,10 @@ export const toolCallPageKey = (
     member: search.member,
     app: search.app,
     status: search.status,
+    // JHPATCH: risk, kind and approval filters
+    risk: search.risk,
+    kind: search.kind,
+    approval: search.approval,
     agent: search.agent,
     connection: search.connection,
     session: search.session,
@@ -135,6 +174,10 @@ export const toolCallPageAtom = Atom.family(({ organization, ...key }: ToolCallP
     member: key.member,
     app: key.app,
     status: key.status,
+    // JHPATCH: risk, kind and approval filters
+    risk: key.risk,
+    kind: key.kind,
+    approval: key.approval,
     agent: key.agent,
     connection: key.connection,
     session: key.session,

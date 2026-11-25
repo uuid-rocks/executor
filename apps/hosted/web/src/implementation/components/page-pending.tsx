@@ -51,6 +51,33 @@ export function GroupsLoading() {
   );
 }
 
+// JHPATCH: risk policy page
+export const riskPolicyTitle = "Risk policy";
+export const riskPolicyDescription =
+  "How calls are approved and recorded at each risk tier. Apps declare each tool's tier.";
+
+/** The Risk policy page's heading, the same while the policy loads. */
+export function RiskPolicyFrame({ children }: { readonly children: ReactNode }) {
+  return (
+    <PageFrame>
+      <PageHeader title={riskPolicyTitle} description={riskPolicyDescription} />
+      {children}
+    </PageFrame>
+  );
+}
+
+export function RiskPolicyLoading() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading risk policy"
+      className="min-h-48 rounded-lg border bg-muted/30 p-5 text-sm text-muted-foreground"
+    >
+      Loading risk policy…
+    </div>
+  );
+}
+
 export const activityTitle = "Activity";
 export const activityDescription =
   "Which tools were called, by whom, and how each call ended. Calls are kept for 30 days.";
@@ -246,6 +273,13 @@ export function PagePending({
       <GroupsFrame>
         <GroupsLoading />
       </GroupsFrame>
+    );
+  // JHPATCH: risk policy page
+  if (page === "risk-policy")
+    return (
+      <RiskPolicyFrame>
+        <RiskPolicyLoading />
+      </RiskPolicyFrame>
     );
   if (page === "activity")
     return (

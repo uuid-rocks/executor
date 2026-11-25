@@ -26,6 +26,7 @@ export const serverFilesSource = (files: readonly SourceFile[]) =>
  * 0.0.1-beta.0, and the invocation bridges skip caching when a build has no `cacheSession`.
  * `isolatedClock` first shipped in apps 0.0.1-beta.46; without it they report no dispatch time.
  */
+// JHPATCH: the entry passes the invocation's `risk` policy into the app's context.
 export const appBridge = `
 import app from "./index.ts";
 import * as host from "apps/host";
@@ -36,14 +37,14 @@ export default {
   clock: host.isolatedClock,
   async fetch(request, env) {
     // This entry point has no public route or host bindings. Only the trusted loader calls it.
-    const { command, accounts, approval, replay, deadline, workflowRun } = await request.json();
+    const { command, accounts, approval, replay, deadline, workflowRun, risk } = await request.json();
     const lifetime = new AbortController();
     const delivery = env?.ELICITATION;
     const elicitation = delivery == null ? undefined : host.isolatedElicitation((prompt) => delivery(prompt), lifetime);
     try {
       return await handler(new Request("https://app.internal/dispatch", {
         method: "POST", headers: { "content-type": "application/json", traceparent: request.headers.get("traceparent") ?? "" }, body: JSON.stringify(command), signal: AbortSignal.any([request.signal, lifetime.signal])
-      }), { ...host.hostContext(accounts, approval), files, ...(env?.CACHE === undefined ? {} : { cache: env.CACHE }), ...(replay === undefined ? {} : { replay }), ...(deadline === undefined ? {} : { deadline }), ...(env?.WORKFLOW && workflowRun ? { workflow: host.isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: host.isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
+      }), { ...host.hostContext(accounts, approval), files, ...(env?.CACHE === undefined ? {} : { cache: env.CACHE }), ...(replay === undefined ? {} : { replay }), ...(deadline === undefined ? {} : { deadline }), ...(risk === undefined ? {} : { risk }), ...(env?.WORKFLOW && workflowRun ? { workflow: host.isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: host.isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
     } finally { lifetime.abort(); }
   }
 };`;

@@ -68,6 +68,8 @@ export const appSpanNames: ReadonlySet<string> = new Set([
   "app.skills.routers",
   "app.tool.resolve",
   "app.tool.approval",
+  // JHPATCH: the span a computed risk tier runs in.
+  "app.tool.risk",
   "app.tool.elicitation",
   "app.elicitation.wait",
   "app.workflow.control",

@@ -25,6 +25,8 @@ import {
   type HostAccounts,
   type HostAccountSlots,
   scopedSlots,
+  defaultRiskTier,
+  type InvocationRisk,
 } from "apps/contracts";
 import {
   AccountRequired,
@@ -48,6 +50,7 @@ import {
 import {
   AppCodeEntered,
   CallFailureSources,
+  RuntimeCallRisk,
   runtimeFailures,
   type CallFailureSource,
   type Runtime,
@@ -98,6 +101,9 @@ import {
   InvocationPrefetch,
   InvocationSelection,
   ToolCallKindObserved,
+  ToolCallRiskObserved,
+  ToolRiskPolicy,
+  type RiskTier,
   type PrefetchedInvocation,
   type PrefetchHost,
   SearchablePrefetch,
@@ -672,6 +678,8 @@ const runtimeFailure = (
   identity: { app: AppId; version: VersionId; tool: ToolName },
   state: InvocationSnapshot,
   renewal: Renewal | undefined,
+  // JHPATCH: the tier the app evaluated the call at, named by a risk policy's block.
+  risk?: RiskTier,
 ) =>
   Match.type<CallError>().pipe(
     Match.tagsExhaustive({
@@ -712,8 +720,20 @@ const runtimeFailure = (
               ? ["Input did not match the tool schema"]
               : problems,
         }),
-      HostToolBlocked: () => new ToolBlocked(identity),
-      HostToolApprovalRequired: () => new ToolApprovalRequired(identity),
+      // JHPATCH: the organization's risk policy, not the app, blocked it.
+      HostToolBlocked: ({ policy }) =>
+        new ToolBlocked(
+          policy === true
+            ? { ...identity, policy, ...(risk === undefined ? {} : { risk }) }
+            : identity,
+        ),
+      // JHPATCH: as for a block.
+      HostToolApprovalRequired: ({ policy }) =>
+        new ToolApprovalRequired(
+          policy === true
+            ? { ...identity, policy, ...(risk === undefined ? {} : { risk }) }
+            : identity,
+        ),
       HostToolPolicyFailed: () => new ToolPolicyFailed(identity),
       HostOutputInvalid: () => new ToolCallFailed({ ...identity, reason: "Tool execution failed" }),
       HostRequestInvalid: (error) => evaluationFailure(identity, error),
@@ -814,6 +834,8 @@ const toolCallFailure =
     identity: { app: AppId; version: VersionId; tool: ToolName },
     state: InvocationSnapshot,
     renewal: Renewal | undefined,
+    // JHPATCH: see `runtimeFailure`.
+    risk?: RiskTier,
   ) =>
   (failure: CallError) =>
     failure._tag === "RuntimeProtocolFailed" && failure.notSent === true
@@ -831,7 +853,7 @@ const toolCallFailure =
               "The app's previous Worker did not finish unloading, so Executor did not send this tool call.",
             notSent: true,
           })
-        : runtimeFailure(identity, state, renewal)(failure);
+        : runtimeFailure(identity, state, renewal, risk)(failure);
 /**
  * Whether a failure says that nothing of its exchange left the host. It holds for the call only
  * when that exchange was the only one in the call to reach the app's code (`entries`): an earlier
@@ -1116,6 +1138,23 @@ export const makeTools = (
    * since the listing was evaluated, is described live from one evaluation of the catalog; one the catalog does not list either is
    * called without a kind: the app applies the tool's own kind and storage opens for writing.
    */
+  // JHPATCH: the listed tool is also read for the tier of builds that predate risk tiers.
+  const listedOf = (state: InvocationSnapshot, context: InvocationContext, name: ToolName) =>
+    listings
+      .read(state, callListingOf(state), {
+        refreshStale: false,
+        followChanges: false,
+        resolved: context,
+      })
+      .pipe(
+        Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
+        // A listing that did not finish says nothing about the tool.
+        Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
+        Effect.flatMap((listed) =>
+          listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
+        ),
+        Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
+      );
   const kindOf = (
     state: InvocationSnapshot,
     context: InvocationContext,
@@ -1123,26 +1162,42 @@ export const makeTools = (
     kind: ToolKind | undefined,
   ) =>
     kind === undefined
-      ? listings
-          .read(state, callListingOf(state), {
-            refreshStale: false,
-            followChanges: false,
-            resolved: context,
-          })
-          .pipe(
-            Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
-            // A listing that did not finish says nothing about the tool.
-            Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
-            Effect.flatMap((listed) =>
-              listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
-            ),
-            Effect.map((tool): ToolKind | undefined =>
-              tool.readOnly === true ? "query" : "mutation",
-            ),
-            Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
-            Effect.withSpan("sdk.tools.kind"),
-          )
+      ? listedOf(state, context, name).pipe(
+          Effect.map((tool): ToolKind | undefined =>
+            tool === undefined ? undefined : tool.readOnly === true ? "query" : "mutation",
+          ),
+          Effect.withSpan("sdk.tools.kind"),
+        )
       : Effect.succeed(kind);
+  /**
+   * The tier of a call to a build that predates risk tiers, which cannot evaluate them: the
+   * administrator's override, the listed tier, or the default for the listed kind and hints.
+   */
+  const fallbackRisk = (
+    state: InvocationSnapshot,
+    context: InvocationContext,
+    name: ToolName,
+    kind: ToolKind | undefined,
+    override: RiskTier | undefined,
+  ) =>
+    override !== undefined
+      ? Effect.succeed(override)
+      : listedOf(state, context, name).pipe(
+          Effect.map((tool): RiskTier =>
+            tool === undefined
+              ? defaultRiskTier(kind === "query", undefined)
+              : (tool.risk ?? defaultRiskTier(tool.readOnly === true, tool.annotations)),
+          ),
+        );
+  /** The organization's risk policy for a call, when the host has one. */
+  const riskPolicyOf = (state: InvocationSnapshot, tool: ToolName) =>
+    Effect.flatMap(
+      ToolRiskPolicy,
+      (read): Effect.Effect<InvocationRisk | undefined, StorageError> =>
+        read === undefined
+          ? Effect.succeed(undefined)
+          : read({ owner: state.app.owner, app: state.app.id, tool }),
+    );
   /**
    * With the accounts the host's check resolved ({@link InvocationSelection}), make the call's
    * reads of the app and those accounts, and the actor's app recheck, at once. The host's check has
@@ -1486,6 +1541,18 @@ export const makeTools = (
       });
       return state;
     });
+  // JHPATCH: listings show the tier the risk policy enforces for builds that cannot evaluate one.
+  /**
+   * A tool as listed: a build from before risk tiers lists none, so it gets the tier the policy
+   * enforces for it (`fallbackRisk`), from its kind and hints.
+   */
+  const withListedRisk = <T extends Pick<Tool, "risk" | "readOnly" | "annotations">>(
+    state: InvocationSnapshot,
+    tool: T,
+  ): T =>
+    tool.risk !== undefined || state.version.requirements.capabilities?.riskPolicy === true
+      ? tool
+      : { ...tool, risk: defaultRiskTier(tool.readOnly === true, tool.annotations) };
   /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
   /** A catalog's tools as the listing store keeps them, sorted by name. */
   const toListing =
@@ -1499,7 +1566,8 @@ export const makeTools = (
       items: [...tools]
         .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         .map((tool) => ({
-          ...tool,
+          // JHPATCH: see `withListedRisk`.
+          ...withListedRisk(state, tool),
           app: state.app.id,
           version: state.version.id,
           name: ToolName.make(tool.name),
@@ -1755,7 +1823,8 @@ export const makeTools = (
         );
         const tool = yield* describe(state, context, input.tool);
         return {
-          ...tool,
+          // JHPATCH: see `withListedRisk`.
+          ...withListedRisk(state, tool),
           app: state.app.id,
           version: state.version.id,
           name: ToolName.make(tool.name),
@@ -1811,9 +1880,31 @@ export const makeTools = (
         const read = yield* readOf(state, parsed.tool, named);
         const declaredRead = yield* declaredReadOf(state, parsed.tool, named);
         // Every failure from here, the app's or Executor's own, passes through `callFailure` once.
+        // JHPATCH: a block Executor decided itself, before handing the call to the app.
+        let refused: ToolBlocked | undefined;
         return yield* Effect.gen(function* () {
           const kind = yield* kindOf(state, context, parsed.tool, named);
           if (kind !== undefined) (yield* ToolCallKindObserved)?.(kind);
+          // JHPATCH: the organization's risk policy, enforced by the app's build when it can.
+          const risk = yield* riskPolicyOf(state, parsed.tool);
+          const observeRisk = yield* ToolCallRiskObserved;
+          const enforced = state.version.requirements.capabilities?.riskPolicy === true;
+          let tier: RiskTier | undefined;
+          if (!enforced && (risk !== undefined || observeRisk !== undefined)) {
+            tier = yield* fallbackRisk(state, context, parsed.tool, kind, risk?.tier);
+            const action = risk?.actions[tier] ?? "app";
+            observeRisk?.({ tier, action });
+            // The build cannot ask for approval its policy requires, so the call cannot run.
+            if (action !== "app") {
+              refused = new ToolBlocked({
+                ...identity,
+                policy: true,
+                risk: tier,
+                ...(action === "ask" ? { redeploy: true } : {}),
+              });
+              return yield* Effect.fail(refused);
+            }
+          }
           let toolError = false;
           const execute = (context: InvocationContext) =>
             Effect.suspend(() => {
@@ -1829,6 +1920,8 @@ export const makeTools = (
                 ...(kind === undefined ? {} : { kind }),
                 input: args,
                 ...(options?.elicitation === undefined ? {} : { elicitation: options.elicitation }),
+                // JHPATCH: sent only to builds that declare they enforce it.
+                ...(enforced && risk !== undefined ? { risk } : {}),
               });
             }).pipe(
               Effect.provideService(ToolResultObservation, {
@@ -1836,9 +1929,16 @@ export const makeTools = (
                   toolError = true;
                 },
               }),
+              // JHPATCH: the tier the build evaluated the call at.
+              Effect.provideService(RuntimeCallRisk, (evaluated) => {
+                tier = evaluated;
+              }),
               Effect.result,
             );
           const { result, renewal } = yield* executeRenewing(state, context, read, execute);
+          // JHPATCH: a build that enforces the policy reports the tier it evaluated.
+          if (enforced && tier !== undefined)
+            observeRisk?.({ tier, action: risk?.actions[tier] ?? "app" });
           // The tool is named once the app has answered for it: a name it lacks is the caller's text.
           if (
             Result.isSuccess(result) ||
@@ -1862,14 +1962,22 @@ export const makeTools = (
           if (Schema.is(HostToolApprovalRequired)(result.failure)) {
             // The request saves the caller's kind, so its pending response and its resumption
             // treat a call that named none as one that may write.
-            return yield* approvals.save(
+            // JHPATCH: kept to add the tier the policy asked about.
+            const pending = yield* approvals.save(
               yield* invocation(state, parsed.tool, named, result.failure.input),
               args,
               options?.issuer,
+              // JHPATCH: the organization's risk policy asked, so automatic approval must not.
+              result.failure.policy,
             );
+            return pending.policy === true && tier !== undefined
+              ? { ...pending, risk: tier }
+              : pending;
           }
           yield* observeFailure(failureSource(result.failure));
-          return yield* Effect.fail(toolCallFailure(identity, state, renewal)(result.failure));
+          return yield* Effect.fail(
+            toolCallFailure(identity, state, renewal, tier)(result.failure),
+          );
         }).pipe(
           Effect.catch((failure) =>
             // Only a confirmed read's renewal fails a call itself (`executeRenewing`), and a
@@ -1878,6 +1986,8 @@ export const makeTools = (
             failure._tag === "OAuthReconnectRequired" ||
             failure._tag === "OAuthRenewalFailed" ||
             failure._tag === "AccountRequired" ||
+            // JHPATCH: the policy blocked it before the call reached the app.
+            failure === refused ||
             !enteredApp
               ? Effect.fail(failure)
               : Effect.flatMap(Effect.all([read, declaredRead]), ([read, declared]) =>
@@ -1986,10 +2096,33 @@ export const makeTools = (
                   // confirms it.
                   const read = yield* readOf(state, saved.tool, saved.kind);
                   const declaredRead = yield* declaredReadOf(state, saved.tool, saved.kind);
+                  // JHPATCH: as for a call.
+                  let refused: ToolBlocked | undefined;
                   // As for a call, every failure from here passes through `callFailure` once, so a
                   // resumed call that may write reports what it failed with as possibly written.
                   return yield* Effect.gen(function* () {
                     const kind = yield* kindOf(state, context, saved.tool, saved.kind);
+                    // JHPATCH: the policy is read again; a deny set since the request still holds.
+                    const risk = yield* riskPolicyOf(state, saved.tool);
+                    const observeRisk = yield* ToolCallRiskObserved;
+                    const enforced = state.version.requirements.capabilities?.riskPolicy === true;
+                    let tier: RiskTier | undefined;
+                    if (!enforced && (risk !== undefined || observeRisk !== undefined)) {
+                      tier = yield* fallbackRisk(state, context, saved.tool, kind, risk?.tier);
+                      const action = risk?.actions[tier] ?? "app";
+                      observeRisk?.({ tier, action });
+                      // A person approved the call, which answers `ask`.
+                      if (action === "deny") {
+                        refused = new ToolBlocked({
+                          app: saved.app,
+                          version: saved.version,
+                          tool: saved.tool,
+                          policy: true,
+                          risk: tier,
+                        });
+                        return yield* Effect.fail(refused);
+                      }
+                    }
                     let toolError = false;
                     const execute = (context: InvocationContext) =>
                       Effect.suspend(() => {
@@ -2010,12 +2143,18 @@ export const makeTools = (
                           ...(options?.elicitation === undefined
                             ? {}
                             : { elicitation: options.elicitation }),
+                          // JHPATCH: as for a call.
+                          ...(enforced && risk !== undefined ? { risk } : {}),
                         });
                       }).pipe(
                         Effect.provideService(ToolResultObservation, {
                           failed: () => {
                             toolError = true;
                           },
+                        }),
+                        // JHPATCH: as for a call.
+                        Effect.provideService(RuntimeCallRisk, (evaluated) => {
+                          tier = evaluated;
                         }),
                         Effect.result,
                       );
@@ -2027,6 +2166,9 @@ export const makeTools = (
                       read,
                       execute,
                     );
+                    // JHPATCH: as for a call.
+                    if (enforced && tier !== undefined)
+                      observeRisk?.({ tier, action: risk?.actions[tier] ?? "app" });
                     if (Result.isFailure(result)) {
                       yield* observeFailure(failureSource(result.failure));
                       return yield* Effect.fail(
@@ -2034,6 +2176,7 @@ export const makeTools = (
                           { app: saved.app, version: saved.version, tool: saved.tool },
                           state,
                           renewal,
+                          tier,
                         )(result.failure),
                       );
                     }
@@ -2053,6 +2196,8 @@ export const makeTools = (
                       failure._tag === "OAuthReconnectRequired" ||
                       failure._tag === "OAuthRenewalFailed" ||
                       failure._tag === "AccountRequired" ||
+                      // JHPATCH: as for a call.
+                      failure === refused ||
                       !enteredApp
                         ? Effect.fail(failure)
                         : Effect.flatMap(Effect.all([read, declaredRead]), ([read, declared]) =>

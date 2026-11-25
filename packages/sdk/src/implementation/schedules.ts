@@ -26,7 +26,13 @@ import {
   ScheduleInvalid,
 } from "../contracts/schedules.ts";
 import { CallFailureSources, InvocationRun, type CallFailureSource } from "../contracts/runtime.ts";
-import { ScheduleObservation } from "../contracts/scheduler.ts";
+// JHPATCH: the host's hook for the tool calls runs make.
+import {
+  ScheduleObservation,
+  ScheduledToolCalls,
+  type ScheduledCall,
+  type ScheduledToolCall,
+} from "../contracts/scheduler.ts";
 import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { ExecutorDatabase } from "./storage.ts";
@@ -118,6 +124,31 @@ export const makeSchedules = (
       return yield* parse(StoredScheduledRun, row);
     });
   const publicRun = (run: StoredScheduledRun) => ScheduledRun.make(run);
+  // JHPATCH: every tool call and resume a run makes passes through the host's hook, which logs it.
+  const scheduledCall = (
+    setting: Pick<ScheduleSettings, "id" | "name" | "owner" | "app" | "actor">,
+    run: ScheduledRunId,
+  ): ScheduledCall => ({
+    owner: setting.owner,
+    app: setting.app,
+    actor: setting.actor,
+    schedule: { id: setting.id, name: setting.name },
+    run,
+  });
+  const hookedCall = (run: ScheduledCall, call: ScheduledToolCall) =>
+    Effect.flatMap(ScheduledToolCalls, (hooks) => {
+      const work = tools.call({ app: run.app, ...call });
+      return hooks === undefined ? work : hooks.call(run, call, work);
+    });
+  const hookedResume = (
+    run: ScheduledCall,
+    requestId: NonNullable<StoredScheduledRun["requestId"]>,
+    action: "accept" | "decline",
+  ) =>
+    Effect.flatMap(ScheduledToolCalls, (hooks) => {
+      const work = tools.resume({ requestId, owner: run.owner, response: { action } });
+      return hooks === undefined ? work : hooks.resume(run, requestId, work);
+    });
   /**
    * The accounts a schedule runs with now: the app links, and for a member's copy its actor's user
    * links. An app schedule has no actor and runs without a caller.
@@ -761,13 +792,12 @@ export const makeSchedules = (
                 yield* Effect.gen(function* () {
                   const settings = yield* readSettings(claim.scheduleId);
                   yield* authorize({ ...settings, phase: "resume" });
-                  const response = yield* tools
-                    .resume({
-                      requestId,
-                      owner: pending.owner,
-                      response: { action: answer },
-                    })
-                    .pipe(Effect.provideService(CurrentActor, settings.actor ?? undefined));
+                  // JHPATCH: through the host's hook, which logs the resume.
+                  const response = yield* hookedResume(
+                    scheduledCall(settings, claim.id),
+                    requestId,
+                    answer,
+                  ).pipe(Effect.provideService(CurrentActor, settings.actor ?? undefined));
                   yield* complete(claim, response, sources.source);
                 }).pipe(
                   Effect.withErrorReporting,
@@ -933,8 +963,9 @@ export const makeSchedules = (
                       set: { nextAt, timing: declared.timing },
                     }),
                   );
-                  const response = yield* tools.call({
-                    app: setting.app,
+                  // JHPATCH: through the host's hook, which logs the call.
+                  const run = scheduledCall(setting, claim.id);
+                  const response = yield* hookedCall(run, {
                     accounts,
                     tool: declared.tool,
                     // Schedules only target mutations; defineApp checks this.
@@ -947,15 +978,13 @@ export const makeSchedules = (
                       : finish(claim, "succeeded");
                     return;
                   }
-                  if (setting.approvalMode === "automatic") {
+                  // JHPATCH: an approval the organization's risk policy requires waits for a person.
+                  if (setting.approvalMode === "automatic" && response.policy !== true) {
                     yield* authorize({ ...setting, phase: "resume" });
                     yield* complete(
                       claim,
-                      yield* tools.resume({
-                        requestId: response.requestId,
-                        owner: setting.owner,
-                        response: { action: "accept" },
-                      }),
+                      // JHPATCH: through the host's hook, which logs the resume.
+                      yield* hookedResume(run, response.requestId, "accept"),
                       sources.source,
                     );
                   } else {
@@ -989,11 +1018,8 @@ export const makeSchedules = (
                     if (!waiting)
                       yield* complete(
                         claim,
-                        yield* tools.resume({
-                          requestId: response.requestId,
-                          owner: setting.owner,
-                          response: { action: "decline" },
-                        }),
+                        // JHPATCH: through the host's hook, which logs the resume.
+                        yield* hookedResume(run, response.requestId, "decline"),
                         sources.source,
                       );
                   }

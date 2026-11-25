@@ -1,13 +1,17 @@
+// JHPATCH: arguments are kept when the organization's risk policy says so.
 /**
  * The tool call log: one row per app tool call a hosted caller starts, kept 30 days. It records
- * who called which tool and how the call ended; never its arguments, its result or any text the
- * app or a service replied with.
+ * who called which tool, the risk tier it was evaluated at and how the call ended; never its
+ * result or any text the app or a service replied with. Its arguments are kept, with secrets
+ * removed, only when the organization's risk policy records them for the call's tier.
  */
 import {
   App,
   AppId,
   Cursor,
   RequestInvalid,
+  // JHPATCH: calls carry the risk tier they were evaluated at.
+  RiskTier,
   StorageError,
   ToolKind,
   ToolName,
@@ -43,14 +47,19 @@ export const ToolCallSource = Schema.Literals([
 ]);
 export type ToolCallSource = typeof ToolCallSource.Type;
 
+// JHPATCH: a schedule is a caller too.
 /**
  * What the request a call arrives on says about its caller. `sourceId` is the agent's grant (an
- * MCP or API OAuth grant, the row on the Connections tab) or the API key; the dashboard has none.
- * `session` is the MCP session the request named, `execution` the MCP execution it ran in.
+ * MCP or API OAuth grant, the row on the Connections tab), the API key or the schedule; the
+ * dashboard has none. `session` is the MCP session the request named, `execution` the MCP
+ * execution or scheduled run it ran in.
  */
 export interface ToolCallCaller {
   readonly source: ToolCallSource;
   readonly sourceId?: string | undefined;
+  // JHPATCH: a schedule names itself; agents and keys are named from their rows.
+  /** The source's name, for a schedule, whose name the log cannot read from a row of its own. */
+  readonly name?: string | undefined;
   readonly session?: string | undefined;
   readonly execution?: string | undefined;
 }
@@ -202,6 +211,12 @@ export const ToolCallQuery = Schema.Struct({
   connection: Schema.optional(Text),
   session: Schema.optional(Text),
   run: Schema.optional(Text),
+  // JHPATCH: filter by risk tier, kind and whether approval was asked.
+  /** Calls evaluated at this tier or a higher one. */
+  risk: Schema.optional(RiskTier),
+  kind: Schema.optional(ToolKind),
+  /** `requested`: calls that asked a person for approval; `none`: calls that did not. */
+  approval: Schema.optional(Schema.Literals(["requested", "none"])),
   /**
    * Words matched in the tool, app, member, agent and account names. Text that is exactly a call
    * reference finds that call alone, whatever the other filters and the range.
@@ -230,17 +245,23 @@ export const ToolCallPerson = Schema.Struct({
   email: Schema.NullOr(Schema.String),
   image: Schema.NullOr(Schema.String),
 });
-/** One logged call. Arguments, results and any text an app or service replied with are never kept. */
+// JHPATCH: arguments are kept when the risk policy says so.
+/**
+ * One logged call. Results and any text an app or service replied with are never kept; arguments
+ * only when the risk policy records them for the call's tier.
+ */
 export const ToolCall = Schema.Struct({
   id: ToolCallId,
   startedAt: Schema.Date,
-  /** Who the call ran as; null when the app ran it on its own, such as a schedule or webhook. */
+  // JHPATCH: a member's schedule runs as them; an app schedule as nobody.
+  /** Who the call ran as; null when the app ran it on its own, such as an app schedule. */
   member: Schema.NullOr(ToolCallPerson),
   source: Schema.Struct({
     kind: ToolCallSource,
-    /** The agent's grant or the API key; null for the dashboard. */
+    // JHPATCH: scheduled runs' calls are logged under their schedule.
+    /** The agent's grant, the API key or the schedule; null for the dashboard. */
     id: Schema.NullOr(Schema.String),
-    /** The agent's client or the key's name when the call was made. */
+    /** The agent's client, the key's or the schedule's name when the call was made. */
     name: Schema.NullOr(Schema.String),
     /**
      * The logo URL the agent's client registered (`logo_uri`), read through its grant; null for
@@ -253,7 +274,8 @@ export const ToolCall = Schema.Struct({
   ),
   /** The MCP session the call arrived on. */
   session: Schema.NullOr(Schema.String),
-  /** The MCP execution that made it: one `execute` program or one `call` batch. */
+  // JHPATCH: a scheduled run is a run too.
+  /** What made it: one MCP `execute` program or `call` batch, or one scheduled run. */
   run: Schema.NullOr(
     Schema.Struct({
       id: Schema.String,
@@ -275,6 +297,17 @@ export const ToolCall = Schema.Struct({
    */
   tool: Schema.NullOr(Schema.String),
   kind: Schema.NullOr(ToolKind),
+  // JHPATCH: the risk tier, what the policy did and the recorded arguments.
+  /** The tier the call was evaluated at; null when it ended before its tier was known. */
+  risk: Schema.NullOr(RiskTier),
+  /** `ask`: the risk policy required a person's approval; `deny`: it blocked the call. */
+  riskAction: Schema.NullOr(Schema.Literals(["ask", "deny"])),
+  /**
+   * The call's arguments with secrets removed, when the risk policy records them for its tier.
+   * Shown to owners, admins and the member who made the call; null to anyone else. `truncated`
+   * says long values, deep values or the whole were cut.
+   */
+  arguments: Schema.NullOr(Schema.Struct({ value: Schema.Json, truncated: Schema.Boolean })),
   /**
    * The accounts the call ran with. An account is named only to the member it belongs to; to
    * everyone else, owners and admins included, it is an account with no ID or name.
@@ -393,7 +426,8 @@ export const HostedToolCalls = HttpApiGroup.make("toolCalls")
       .annotate(RequiredAction, "read")
       .annotate(
         OpenApi.Description,
-        "List the organization's logged tool calls, newest first. Owners and admins see every call; members see only their own. A search that is exactly a call reference returns that call alone. Each call has its start time (startedAt), running time (durationMs), status, app, tool and the agent or key that made it (source).",
+        // JHPATCH: risk, kind and approval filters and recorded arguments.
+        "List the organization's logged tool calls, newest first. Owners and admins see every call; members see only their own. A search that is exactly a call reference returns that call alone. Each call has its start time (startedAt), running time (durationMs), status, app, tool, the agent or key that made it (source) and the risk tier it was evaluated at (risk), with riskAction `ask` or `deny` when the organization's risk policy asked for approval or blocked it. `risk` filters to that tier and above, `kind` to reads (query) or writes (mutation), `approval` to calls that asked for approval (requested) or did not (none). `arguments` holds the call's arguments with secrets removed when the risk policy records them, shown to owners, admins and the member who made the call.",
       ),
   )
   .add(

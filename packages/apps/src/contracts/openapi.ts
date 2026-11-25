@@ -164,6 +164,9 @@ export class OpenapiError extends Schema.TaggedError<OpenapiError>()("OpenapiErr
 export interface OpenapiTool {
   readonly description: string;
   readonly readOnly: boolean;
+  // JHPATCH: a DELETE is hard to undo, so it lists as high risk.
+  /** Set to `high` for a DELETE; other operations take the default for their kind. */
+  readonly risk?: "high";
   readonly outputSchema?: JsonObject;
   readonly input: Schema.Decoder<Schema.Json>;
   readonly run: (

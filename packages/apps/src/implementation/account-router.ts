@@ -5,6 +5,9 @@ import { HostedTool, HostedToolSummary } from "../contracts/host.ts";
 import type { AppOperation } from "../contracts/operations.ts";
 import type { AppNode, AppRouter, DynamicRouter } from "../contracts/router.ts";
 import { JsonObject } from "../contracts/schema.ts";
+import { defaultRiskTier, higherRisk } from "../contracts/tools.ts";
+import type { RiskTier } from "../contracts/protocols/current.ts";
+import type { Risk } from "../contracts/approval.ts";
 import { nativeOperation, operationDeclaration } from "./operations.ts";
 import { nativeRouter, routerDeclaration, type RouterDeclaration } from "./router.ts";
 import {
@@ -103,6 +106,35 @@ const declaresOutput = (operation: AppOperation) => {
 const outputDocument = (operation: AppOperation) =>
   operation.output === undefined ? operation.outputSchema : decoderDocument(operation.output);
 
+// JHPATCH: a merged tool lists its highest tier; a call runs at its account's tier when any computes.
+/** A variant's tier when it is fixed: its own, or the default for its kind and hints. */
+const fixedRisk = (operation: AppOperation): RiskTier | undefined =>
+  typeof operation.risk === "function"
+    ? undefined
+    : (operation.risk ?? defaultRiskTier(operation.kind === "query", operation.annotations));
+/**
+ * The combined operation's tier: the highest of its variants' fixed tiers, or, when any variant
+ * computes its tier, the selected account's.
+ */
+const combinedRisk = (
+  variants: readonly AppOperation[],
+  select: (input: Selection) => AppOperation,
+  failed: ReadonlyMap<string, unknown>,
+): Risk<Selection> => {
+  const fixed = variants.map(fixedRisk);
+  if (fixed.every((tier) => tier !== undefined)) return fixed.reduce(higherRisk, "low");
+  return (context) => {
+    const input = context.toolInput;
+    // A failed account's call fails before it reaches the service.
+    if (failed.has(input.accountId)) return Effect.succeed("low" as const);
+    const operation = select(input);
+    const risk = operation.risk;
+    return typeof risk === "function"
+      ? risk({ ...context, toolInput: input.input })
+      : Effect.succeed(fixedRisk(operation) ?? "low");
+  };
+};
+
 /**
  * One operation whose input selects the account whose variant runs. It is a query only when every
  * account's variant is, matching how the merged tool is listed. An account in `failed` could not
@@ -159,6 +191,8 @@ const combineOperation = (
         ? Effect.succeed("approved" as const)
         : operation.approval({ ...context, toolInput: context.toolInput.input });
     },
+    // JHPATCH: the tier across accounts.
+    risk: combinedRisk(variants, select, failed),
     run: (context, input: Selection) => {
       if (failed.has(input.accountId))
         return Effect.fail(accountProviderError(failed.get(input.accountId), input.accountId));
@@ -216,6 +250,16 @@ const mergeSummary = (
     readOnly: variants.every(([, tool]) => tool.readOnly === true),
     ...(variants.every(([, tool]) => tool.kindConfirmed === true) ? { kindConfirmed: true } : {}),
     ...sameAcross("annotations", variants),
+    // JHPATCH: the highest tier across accounts, or computed when any account computes it.
+    ...(variants.some(([, tool]) => tool.riskComputed === true)
+      ? { riskComputed: true }
+      : {
+          risk: variants
+            .map(
+              ([, tool]) => tool.risk ?? defaultRiskTier(tool.readOnly === true, tool.annotations),
+            )
+            .reduce(higherRisk, "low"),
+        }),
   });
 };
 

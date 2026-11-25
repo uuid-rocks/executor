@@ -26,6 +26,16 @@ import { joinPath, mergeMeta } from "./router.ts";
 import { skillFromFiles } from "./skill-files.ts";
 import { jsonSchemaDocument } from "./schema.ts";
 import type { OperationSchedule } from "../contracts/schedules.ts";
+import { defaultRiskTier } from "../contracts/tools.ts";
+
+// JHPATCH: every listed tool carries its risk tier, or says the tier depends on input.
+/** A declared operation's listed tier: its own, computed from input, or the default for its kind. */
+export const operationRisk = (operation: AppOperation) =>
+  typeof operation.risk === "function"
+    ? { riskComputed: true as const }
+    : {
+        risk: operation.risk ?? defaultRiskTier(operation.kind === "query", operation.annotations),
+      };
 
 /**
  * Keep only a failure's safe fields. Anything unrecognized becomes an evaluation failure with the
@@ -135,6 +145,8 @@ const summaryFields = (
     // A declared operation's kind is the app's own, or its protocol's, such as an HTTP method.
     kindConfirmed: true,
     annotations: { ...operation.annotations, readOnlyHint: readOnly },
+    // JHPATCH: the tool's risk tier.
+    ...operationRisk(operation),
   };
 };
 
@@ -320,12 +332,17 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
           names.add(tool.name);
           if (relative !== undefined && !relative.includes(tool.name)) continue;
           const readOnly = tool.readOnly === true;
+          // JHPATCH: a source's tool without a tier gets the default for its kind and hints.
+          const { risk, riskComputed, ...described } = tool;
           found.push({
-            ...tool,
+            ...described,
             name: joinPath(path, tool.name),
             ...(path === "" ? {} : { router: path }),
             readOnly,
             annotations: { ...tool.annotations, readOnlyHint: readOnly },
+            ...(riskComputed === true
+              ? { riskComputed }
+              : { risk: risk ?? defaultRiskTier(readOnly, tool.annotations) }),
           });
         }
         return { meta, found, error };

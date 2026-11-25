@@ -216,6 +216,12 @@ export const DeclaredRequirements = Schema.Struct({
        * as an excess field.
        */
       sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
+      // JHPATCH: builds that evaluate risk tiers and enforce the invocation's risk policy.
+      /**
+       * Evaluates each call's risk tier and enforces the invocation's `risk` policy. Earlier builds
+       * ignore it, so the host enforces the policy itself from the listing.
+       */
+      riskPolicy: Schema.optionalKey(Schema.Literal(true)),
     }),
   ),
   /**
@@ -277,6 +283,32 @@ export const ResolvedAccounts = Schema.Struct({
 /** Parsed host selections, kept redacted until native account binding. */
 export type ResolvedAccounts = typeof ResolvedAccounts.Type;
 
+// JHPATCH: tool risk tiers and the organization's risk policy cross the host boundary.
+/**
+ * How risky one call is, in order: `low` reads or changes nothing that matters, `medium` is an
+ * ordinary write, `high` is hard to undo, such as a delete, and `critical` changes production,
+ * moves money or acts in bulk.
+ */
+export const RiskTier = Schema.Literals(["low", "medium", "high", "critical"]);
+export type RiskTier = typeof RiskTier.Type;
+/**
+ * What an organization's policy does with a tier: `app` keeps the app's own approval, `ask` makes a
+ * person approve and `deny` blocks the call before the tool runs.
+ */
+export const RiskAction = Schema.Literals(["app", "ask", "deny"]);
+export type RiskAction = typeof RiskAction.Type;
+/** The organization's risk policy for one call. `tier` is an administrator's override of the app's. */
+export const InvocationRisk = Schema.Struct({
+  actions: Schema.Struct({
+    low: RiskAction,
+    medium: RiskAction,
+    high: RiskAction,
+    critical: RiskAction,
+  }),
+  tier: Schema.optionalKey(RiskTier),
+});
+export type InvocationRisk = typeof InvocationRisk.Type;
+
 /** Trusted approval for one decoded call. Never accepted in public command JSON. */
 export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
 export type TrustedToolApproval = typeof TrustedToolApproval.Type;
@@ -305,6 +337,11 @@ export const HostedTool = Schema.Struct({
   outputSchema: Schema.optionalKey(JsonObject),
   annotations: Schema.optionalKey(ToolAnnotations),
   _meta: Schema.optionalKey(JsonObject),
+  // JHPATCH: each tool's risk tier, listed so hosts and people see it before a call.
+  /** The tool's tier: its static one, or the default for its kind. Omitted when computed from input. */
+  risk: Schema.optionalKey(RiskTier),
+  /** The tier depends on each call's input. */
+  riskComputed: Schema.optionalKey(Schema.Literal(true)),
 });
 /** Parsed live tool description. */
 export type HostedTool = typeof HostedTool.Type;
@@ -532,11 +569,19 @@ export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("Ho
   ),
 }) {}
 /** The tool's approval policy blocked this call before its tool body ran. */
-export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
+export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {
+  // JHPATCH: the organization's risk policy blocked it, not the app.
+  policy: Schema.optionalKey(Schema.Literal(true)),
+}) {}
 /** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */
 export class HostToolApprovalRequired extends Schema.TaggedError<HostToolApprovalRequired>()(
   "HostToolApprovalRequired",
-  { input: JsonValue, elicitation: ApprovalElicitation },
+  {
+    input: JsonValue,
+    elicitation: ApprovalElicitation,
+    // JHPATCH: the organization's risk policy requires a person, so automatic approval may not answer.
+    policy: Schema.optionalKey(Schema.Literal(true)),
+  },
 ) {}
 /** The tool's approval policy failed or returned an invalid decision. Author failures remain private. */
 export class HostToolPolicyFailed extends Schema.TaggedError<HostToolPolicyFailed>()(
@@ -587,8 +632,16 @@ export const HostResponse = Schema.Union([
     toolError: Schema.optionalKey(Schema.Literal(true)),
     /** The occurrences this invocation emitted, kept only because it succeeded. */
     events: Schema.optionalKey(EmittedEvents),
+    // JHPATCH: the tier the call was evaluated at, for the host's tool call log.
+    /** The risk tier this call was evaluated at. */
+    risk: Schema.optionalKey(RiskTier),
   }),
-  Schema.Struct({ ok: Schema.Literal(false), error: HostError }),
+  // JHPATCH: a refused call also reports its tier once known.
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    error: HostError,
+    risk: Schema.optionalKey(RiskTier),
+  }),
 ]);
 /** Parsed response envelope. */
 export type HostResponse = typeof HostResponse.Type;
@@ -604,6 +657,8 @@ export const HostInvocation = Schema.Struct({
   replay: Schema.optionalKey(WorkflowReplay),
   deadline: Schema.optionalKey(InvocationDeadline),
   workflowRun: Schema.optionalKey(WorkflowRunId),
+  // JHPATCH: the organization's risk policy, sent only to builds that declare `riskPolicy`.
+  risk: Schema.optionalKey(InvocationRisk),
 });
 export type HostInvocation = typeof HostInvocation.Type;
 

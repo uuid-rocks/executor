@@ -1,6 +1,6 @@
 /** Author routers and the lookups that walk them. Declarations run no handler and contact no source. */
 import { Effect, Schema } from "effect";
-import { HostedTool } from "../contracts/host.ts";
+import { HostedTool, type HostedToolSummary } from "../contracts/host.ts";
 import type { AppOperation } from "../contracts/operations.ts";
 import {
   RouterKey,
@@ -12,10 +12,11 @@ import {
   type RouterIcon,
 } from "../contracts/router.ts";
 import { fromPromise } from "./authoring.ts";
-import type { Approval } from "../approval.ts";
+import type { Approval, Risk } from "../approval.ts";
 import {
   NativeRouterKey as NativeRouter,
   approvedOperation,
+  riskedOperation,
   nativeOperation,
   operationDeclaration,
   type OperationChild,
@@ -282,6 +283,101 @@ export const withApprovals = <Query, Mutation>(
             ]),
           ),
         };
+  return routerDeclaration(walk(native, ""));
+};
+
+// JHPATCH: set risk tiers over a whole router, as `withApprovals` sets approvals.
+/**
+ * Choose a risk tier for each operation a router contains, including tools a dynamic router
+ * resolves later. `policy` receives the operation and its name relative to this router, and returns
+ * a tier, a function that chooses one from each call's input, or undefined to keep the operation's
+ * own tier. Read hints with `toolAnnotations(operation)`. A dynamic router's listing shows the
+ * tier `policy` gives an operation built from each listed tool's kind and hints, so a policy that
+ * reads only those, and the name, lists the tier its calls run at.
+ */
+export const withRisks = <Query, Mutation>(
+  source: RouterDeclaration<Query, Mutation>,
+  policy: (
+    operation: OperationDeclaration<"query" | "mutation", never>,
+    name: string,
+  ) => Risk | undefined,
+): RouterDeclaration<Query, Mutation> => {
+  const native = nativeRouter(source);
+  if (native === undefined) throw new Error("withRisks expects a router");
+  const operation = (node: AppOperation, name: string): AppOperation => {
+    const risk = policy(operationDeclaration(node), name);
+    return risk === undefined ? node : riskedOperation(node, risk);
+  };
+  /** A listed tool with the tier `policy` gives an operation of its kind and hints. */
+  const listed = <Tool extends HostedToolSummary>(tool: Tool, path: string): Tool => {
+    const risk = policy(
+      operationDeclaration({
+        kind: tool.readOnly === true ? "query" : "mutation",
+        description: tool.description,
+        ...(tool.title === undefined ? {} : { title: tool.title }),
+        ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
+        input: Schema.Unknown,
+        run: () => Effect.die(new Error("A listed tool's operation is not run")),
+      }),
+      joinPath(path, tool.name),
+    );
+    if (risk === undefined) return tool;
+    const { risk: _risk, riskComputed: _computed, ...rest } = tool;
+    // SAFETY: the same tool with only its tier fields replaced.
+    return (typeof risk === "string" ? { ...rest, risk } : { ...rest, riskComputed: true }) as Tool;
+  };
+  const child = (node: AppNode, name: string): AppNode => {
+    switch (node.kind) {
+      case "query":
+      case "mutation":
+        return operation(node, name);
+      case "router":
+      case "dynamic":
+        return walk(node, name);
+    }
+  };
+  const walk = (node: AppRouter | DynamicRouter, path: string): AppRouter | DynamicRouter => {
+    if (node.kind === "router")
+      return {
+        ...node,
+        children: Object.fromEntries(
+          Object.entries(node.children).map(([key, value]) => [
+            key,
+            child(value, joinPath(path, key)),
+          ]),
+        ),
+      };
+    const { summaries, describe } = node;
+    return {
+      ...node,
+      list: () => node.list().pipe(Effect.map((tools) => tools.map((tool) => listed(tool, path)))),
+      ...(summaries === undefined
+        ? {}
+        : {
+            summaries: () =>
+              summaries().pipe(Effect.map((tools) => tools.map((tool) => listed(tool, path)))),
+          }),
+      ...(describe === undefined
+        ? {}
+        : {
+            describe: (name: string) =>
+              describe(name).pipe(
+                Effect.map((tool) => (tool === undefined ? undefined : listed(tool, path))),
+              ),
+          }),
+      resolve: (name) =>
+        node.resolve(name).pipe(
+          Effect.flatMap((resolved) =>
+            resolved === undefined
+              ? Effect.succeed(undefined)
+              : Effect.try({
+                  try: () => operation(resolved, joinPath(path, name)),
+                  catch: (error) => error,
+                }),
+          ),
+        ),
+    };
+  };
   return routerDeclaration(walk(native, ""));
 };
 

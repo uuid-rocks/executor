@@ -325,7 +325,10 @@ export const dispatchHostedMcp = <E, R>(
             ];
             if (first)
               leaves.push(
-                Effect.exit(resourceAuthorityForLinks(organization, access.userId, input.app)).pipe(
+                // JHPATCH: with the call's risk policy, so the call reads it from this batch.
+                Effect.exit(
+                  resourceAuthorityForLinks(organization, access.userId, input.app, input.tool),
+                ).pipe(
                   Effect.map((result) => {
                     fold = { organization, user: access.userId, app: input.app, result };
                   }),

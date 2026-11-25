@@ -110,6 +110,8 @@ export {
   router,
   dynamicRouter,
   withApprovals,
+  // JHPATCH: risk tiers over a whole router.
+  withRisks,
   renameTools,
   type OperationChild,
   type OperationDeclaration,
@@ -281,6 +283,8 @@ export { type App, type AppDefinition, defineApp } from "./implementation/app.ts
 export { event, type EventDeclaration, type EventEmitter } from "./implementation/events.ts";
 export type { EmitOptions } from "./contracts/events.ts";
 export type { Approval, ApprovalContext, ApprovalDecision } from "./approval.ts";
+// JHPATCH: risk tiers, declared beside approvals.
+export type { Risk, RiskTier } from "./approval.ts";
 
 type AuthorWebhook<Member, Config, State> = Member extends object
   ? Omit<PromiseMethods<Member>, "config" | "state"> & {
@@ -361,6 +365,8 @@ export function query(first: unknown, second: unknown): unknown {
 export {
   mutation,
   withApproval,
+  // JHPATCH: set one operation's risk tier.
+  withRisk,
   toolAnnotations,
   type Approved,
   type Operation,

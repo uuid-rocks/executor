@@ -28,6 +28,7 @@ import {
   type HostAccounts,
   scopedSlots,
   type InvocationDeadline,
+  type InvocationRisk,
   type ResolvedAccounts,
   type TrustedToolApproval,
   type WorkflowExecution,
@@ -156,6 +157,8 @@ export interface AppInvocation {
   readonly approval?: typeof TrustedToolApproval.Type;
   readonly replay?: typeof WorkflowReplay.Type;
   readonly deadline?: typeof InvocationDeadline.Type;
+  // JHPATCH: the organization's risk policy for the call.
+  readonly risk?: InvocationRisk;
   /** The scheduled run the invocation serves, for telemetry; see `InvocationRun`. */
   readonly run?: string;
   readonly headers: Readonly<Record<string, string>>;
@@ -943,6 +946,8 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           ...(invocation.approval === undefined ? {} : { approval: invocation.approval }),
           ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
           ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
+          // JHPATCH: the caller sets it only for builds that declare `riskPolicy`.
+          ...(invocation.risk === undefined ? {} : { risk: invocation.risk }),
           ...(capabilities.workflow === undefined
             ? {}
             : { workflowRun: capabilities.workflow.runId }),
